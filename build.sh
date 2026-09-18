@@ -64,6 +64,8 @@ rsync -a \
   --exclude='.env' \
   --exclude='data/' \
   --exclude='logs/' \
+  --exclude='*.log' \
+  --exclude='*.out' \
   --exclude='*.egg-info/' \
   "${ROOT}/mac/" "${OUT}/mac/"
 
@@ -80,7 +82,7 @@ if [ -d "${GAME_SRC}" ]; then
     (cd "${GAME_SRC}" && npm ci --silent && npm run build --silent) \
       || echo "[build][警告] 小游戏 dist 构建失败：mac.game.host 部署后会起不来（先本地 build 好再发版）" >&2
   fi
-  rsync -a --exclude='node_modules/' --exclude='.DS_Store' \
+  rsync -a --exclude='node_modules/' --exclude='.DS_Store' --exclude='*.log' --exclude='*.out' \
     "${GAME_SRC}/" "${OUT}/games/coin-catcher/"
   if [ ! -f "${OUT}/games/coin-catcher/dist/index.html" ]; then
     echo "[build][警告] 发版包里没有 games/coin-catcher/dist/index.html：部署后 mac.game.host 不可用" >&2
