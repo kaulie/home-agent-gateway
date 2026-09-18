@@ -58,17 +58,20 @@ curl 127.0.0.1:9528/health
 | 运行期文件 | `<runtime>/backend/{.env, data/.venv, runtime.pid, server.log}`（`backend/` 是平台部署唯一保留位） |
 | 数据（非库） | **代码 / 运行期目录之外**：`MAC_EDGE_DATA_DIR=/Users/gaolei/artifact-storage/home-agent-gateway`（`edge_id.json` / `local_ledger.json` / 录音 / 各能力缓存） |
 | 数据库 | **也在代码之外**：`MAC_EDGE_DB_DIR=/Users/gaolei/database/home-agent-gateway`（Edge 只有一个库 `ncm_songs.sqlite3`，见 `mac/src/mac_edge/db_paths.py`） |
+| 日志 | **也在代码之外**：`MAC_EDGE_LOG_DIR`（不设则跟 `MAC_EDGE_DATA_DIR` 走，即 `<数据目录>/logs`）—— `mac_voice.supervised.out.log` / `intranet_ping.log` / `health.log`；`backend/server.log` 仍是进程 stdout（平台保留清单里的那个） |
 
 ```ini
 # <runtime>/backend/.env（含密钥，不入 git；模板见 mac/.env.example）
 MAC_EDGE_DATA_DIR=/Users/gaolei/artifact-storage/home-agent-gateway
 MAC_EDGE_DB_DIR=/Users/gaolei/database/home-agent-gateway
+MAC_EDGE_LOG_DIR=/Users/gaolei/artifact-storage/home-agent-gateway/logs
 MAC_EDGE_HEALTH_PORT=9528
 ```
 
 **目录优先级**：
 - 库：`MAC_EDGE_NCM_SONGS_DB`（单库）> `MAC_EDGE_DB_DIR` > `MAC_EDGE_DATA_DIR` > `<mac>/data`
 - 数据：`MAC_EDGE_DATA_DIR` > `<runtime>/backend/data`（`start.sh` 会解析并 mkdir，日志里打印）
+- 日志：`MAC_EDGE_LOG_DIR` > `<数据目录>/logs`（`start.sh` 解析/ mkdir：不设时日志**跟随数据目录**，不再落代码目录）
 - 都不设时行为与上游一致（库和数据都在 `mac/data`），本地开发零影响
 
 ## 相对上游的改动（拆分时）

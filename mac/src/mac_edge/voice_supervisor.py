@@ -28,8 +28,11 @@ class VoiceSupervisor:
         get_edge_id: Callable[[], str | None],
         python_exe: str | None = None,
         restart_sec: float = 5.0,
+        log_dir: Path | None = None,
     ) -> None:
         self._mac_root = mac_root
+        # 日志目录：调用方（agent）传 config.log_dir()（MAC_EDGE_LOG_DIR）；不传沿用 <mac>/logs
+        self._log_dir = Path(log_dir) if log_dir else (mac_root / "logs")
         self._edge_id_path = edge_id_path
         self._brain_url = brain_url.rstrip("/")
         self._client_hint = client_hint
@@ -102,7 +105,7 @@ class VoiceSupervisor:
             env["MAC_EDGE_CLIENT_HINT"] = self._client_hint
             # Prefer Mac Runtime data dir for shared edge_id.json
             env.setdefault("MAC_EDGE_DATA_DIR", str(self._mac_root / "data"))
-            log_path = self._mac_root / "logs" / "mac_voice.supervised.out.log"
+            log_path = self._log_dir / "mac_voice.supervised.out.log"
             log_path.parent.mkdir(parents=True, exist_ok=True)
             restart_delay = self._restart_sec
             try:

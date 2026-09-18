@@ -9,7 +9,7 @@ from typing import Any
 
 from mac_edge.brain_client import BrainError, format_intent_summary
 from mac_edge.multi_brain import MultiBrainClient, remember_intent_origin
-from mac_edge.config import Config, mac_root as _mac_root_dir
+from mac_edge.config import Config, log_dir as _log_dir, mac_root as _mac_root_dir
 from mac_edge.delivery import run_pending_deliveries
 from mac_edge.executor import (
     DEADLINE_SLEEP_MIN_SEC,
@@ -110,6 +110,7 @@ class EdgeAgent:
             client_hint=config.identity.client_hint,
             enabled=voice_stream_enabled(),
             get_edge_id=self._get_voice_edge_id,
+            log_dir=_log_dir(),
         )
         self._video_ingest = VideoLiveIngestServer.from_env(config.data_dir)
         self._xiaodu_tts = XiaoduTtsHttpServer.from_env(config.data_dir)

@@ -24,7 +24,7 @@ def _project_root() -> Path:
 
 
 def mac_root() -> Path:
-    """`mac/` 代码目录（`src/`、`.venv/`、`logs/` 的父目录）。
+    """`mac/` 代码目录（`src/`、`.venv/` 的父目录）。
 
     上游按「数据目录的父目录」推（数据目录默认就是 `mac/data`）；部署时数据目录被指到代码
     之外（如 runtime 的 `<runtime>/backend/data`）就会推错 —— 子进程 `mac_voice` 拿到的
@@ -35,6 +35,19 @@ def mac_root() -> Path:
     if override:
         return Path(override).expanduser()
     return Path(__file__).resolve().parents[2]
+
+
+def log_dir() -> Path:
+    """运行期日志目录（`mac_voice.supervised.out.log` / `intranet_ping.log` 等）。
+
+    `MAC_EDGE_LOG_DIR` 优先；不设时沿用历史位置 `<mac>/logs`。部署时把它指到运行期环境
+    的目录（本机生产 = `<MAC_EDGE_DATA_DIR>/logs`，即代码与 runtime 目录之外），
+    否则日志落在代码目录里、每次部署 `--delete` 就被清掉。
+    """
+    override = (os.environ.get("MAC_EDGE_LOG_DIR") or "").strip()
+    if override:
+        return Path(override).expanduser()
+    return mac_root() / "logs"
 
 
 def colocated_lan_brain_url(url: str) -> str:
@@ -146,7 +159,7 @@ class IntranetPingSettings:
     timeout_ms: int = 1000
     discover_interval_sec: float = 300.0
     stats_interval_sec: float = 60.0
-    log_path: Path = field(default_factory=lambda: _project_root() / "logs" / "intranet_ping.log")
+    log_path: Path = field(default_factory=lambda: log_dir() / "intranet_ping.log")
 
 
 @dataclass(frozen=True)
@@ -228,7 +241,7 @@ def _load_intranet_ping(root: Path) -> IntranetPingSettings:
         3600.0,
     )
     log_env = os.environ.get("MAC_EDGE_INTRANET_PING_LOG", "").strip()
-    log_path = Path(log_env).expanduser() if log_env else (root / "logs" / "intranet_ping.log")
+    log_path = Path(log_env).expanduser() if log_env else (log_dir() / "intranet_ping.log")
     return IntranetPingSettings(
         enabled=_env_bool("MAC_EDGE_INTRANET_PING", True),
         mode=mode,

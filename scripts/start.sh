@@ -12,10 +12,11 @@
 # 运行期文件全部放 <runtime>/backend/（平台部署唯一保留的位置）：
 #   backend/.env          密钥 + 运行期配置（模板见 mac/.env.example）
 #   backend/data/.venv    依赖 venv（平台保留位）
-#   backend/runtime.pid   本脚本写；backend/server.log  stdout/err
-# 数据与库都在代码/运行期目录之外（平台 --delete 碰不到）：
-#   MAC_EDGE_DATA_DIR    运行期数据（edge_id / ledger / 录音 / 缓存）→ backend/.env 里配
+#   backend/runtime.pid   本脚本写；backend/server.log  stdout/err（平台保留清单里的那一个）
+# 数据 / 库 / 日志都在代码与 runtime 目录之外（平台 --delete 碰不到），由 backend/.env 指定：
+#   MAC_EDGE_DATA_DIR    运行期数据（edge_id / ledger / 录音 / 缓存）
 #   MAC_EDGE_DB_DIR      SQLite 库（ncm_songs.sqlite3）→ 见 mac/src/mac_edge/db_paths.py
+#   MAC_EDGE_LOG_DIR     运行期日志（mac_voice / intranet_ping / health），默认跟 DATA_DIR 走
 set -euo pipefail
 
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -89,8 +90,16 @@ DATA_DIR="${MAC_EDGE_DATA_DIR:-${_ENV_DATA_DIR:-${RUN_DIR}}}"
 case "${DATA_DIR}" in /*) ;; *) DATA_DIR="${RUNTIME_DIR}/${DATA_DIR}";; esac
 export MAC_EDGE_DATA_DIR="${DATA_DIR}"
 
-mkdir -p "${DATA_DIR}" "${RUN_DIR}" "${BACKEND_DIR}"
+# 日志目录（mac_voice.supervised.out.log / intranet_ping.log / health.log）**跟随运行时环境**：
+# shell 的 MAC_EDGE_LOG_DIR > backend/.env 的 MAC_EDGE_LOG_DIR > <数据目录>/logs。
+# 这样日志不落在代码目录里（平台部署 --delete 会清），而是跟运行期数据放一起。
+_ENV_LOG_DIR="$(awk -F= '/^[[:space:]]*MAC_EDGE_LOG_DIR[[:space:]]*=/{gsub(/[[:space:]"]/,"",$2); v=$2} END{print v}' "${ENV_FILE}" 2>/dev/null || true)"
+LOG_DIR="${MAC_EDGE_LOG_DIR:-${_ENV_LOG_DIR:-${DATA_DIR}/logs}}"
+case "${LOG_DIR}" in /*) ;; *) LOG_DIR="${RUNTIME_DIR}/${LOG_DIR}";; esac
+export MAC_EDGE_LOG_DIR="${LOG_DIR}"
+HEALTH_LOG="${LOG_DIR}/health.log"
 
+mkdir -p "${DATA_DIR}" "${LOG_DIR}" "${RUN_DIR}" "${BACKEND_DIR}"
 # 依赖：mac/requirements.txt（httpx / 声卡 / STT / PDF 渲染等）。缺 venv 现建。
 if [ ! -x "${PY}" ]; then
   log "创建 venv ${VENV}"
@@ -118,7 +127,7 @@ if [ -f "${PID_FILE}" ]; then
   rm -f "${PID_FILE}"
 fi
 
-log "启动 部署版本=${APP_VERSION} runtime=${RUNTIME_DIR} 数据目录=${DATA_DIR} 健康口=127.0.0.1:${HEALTH_PORT}"
+log "启动 部署版本=${APP_VERSION} runtime=${RUNTIME_DIR} 数据目录=${DATA_DIR} 日志目录=${LOG_DIR} 健康口=127.0.0.1:${HEALTH_PORT}"
 cd "${MAC_DIR}"
 # Edge 本体（run_mac_edge.sh 里的默认值都可被这里的 env 覆盖）
 PYTHONUNBUFFERED=1 \
