@@ -621,6 +621,13 @@ ADS: dict[str, dict[str, Any]] = {
         typical_triggers=["用小度说", "小度播报", "客厅音箱说", "让小度念", "小度音箱播报"],
         do_not_dispatch=["Mac 本机播报", "知识问答", "放歌", "投屏", "回读上一步答案"],
     ),
+    "xiaodu.play": _ad(
+        kind="output",
+        role="小度音箱音频播放器",
+        planner_recognize="把本步已有的 audio Asset（如论文听读产出的音频、录音）交给客厅小度音箱放出来。入参 asset_ref（必填，type=audio，常为 $asset_ref）。用户没说是哪份音频时，先排 asset.inventory（type=audio, order=newest_first, index=1）再接本步。本步只放声音，不念文案（那是 xiaodu.speak）、不投屏、不放歌",
+        typical_triggers=["把最新的音频用小度音箱播放", "让小度音箱放这段音频", "小度播放最新的录音", "用客厅音箱放这段音频"],
+        do_not_dispatch=["念一段文案", "投屏", "点歌放歌", "Mac 本机播报", "TTS 生成"],
+    ),
     "music.recognize": _ad(
         kind="action",
         role="识曲器（听歌识曲）",

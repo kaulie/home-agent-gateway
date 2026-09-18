@@ -32,6 +32,100 @@ class XiaoduSpeakerTests(unittest.TestCase):
         xs.bind_server(None)
         self._env.stop()
 
+    def test_play_url_sends_stop_seturi_play(self) -> None:
+        """xiaodu.play：把已有音频 URL 交给小度（Stop + SetAVTransportURI + Play）。"""
+        calls: list[tuple[str, str]] = []
+
+        def fake_post(du_ip: str, action: str, body: str, *, timeout_sec: float = 8.0) -> None:
+            calls.append((action, body))
+
+        with mock.patch.object(xs, "_upnp_post", side_effect=fake_post):
+            with mock.patch.object(
+                xs,
+                "resolve_device",
+                return_value=xs.XiaoduDevice(ip="192.168.3.47", source="cache"),
+            ):
+                msg = xs.play_url(
+                    "http://192.168.3.84:9527/api/v1/assets/asset_x/content?intent_id=787"
+                )
+        self.assertIn("xiaodu playing", msg)
+        self.assertEqual(
+            [a.rsplit("#", 1)[-1] for a, _b in calls],
+            ["Stop", "SetAVTransportURI", "Play"],
+        )
+        self.assertIn("asset_x", calls[1][1])
+
+    def test_play_url_requires_http(self) -> None:
+        with self.assertRaises(xs.XiaoduSpeakerError):
+            xs.play_url("/tmp/a.mp3")
+        with self.assertRaises(xs.XiaoduSpeakerError):
+            xs.play_url("")
+
+    def test_play_url_heals_when_cached_device_is_gone(self) -> None:
+        """缓存设备播放失败 → 丢缓存重新探测 → 用新设备重试一次（与 speak 同策略）。"""
+        played: list[str] = []
+
+        def fake_play(device: xs.XiaoduDevice, uri: str) -> None:
+            played.append(device.ip)
+            if len(played) == 1:
+                raise xs.XiaoduSpeakerError("UPnP request failed (Play): timeout")
+
+        devices = [
+            xs.XiaoduDevice(ip="192.168.3.47", source="cache"),
+            xs.XiaoduDevice(ip="192.168.3.48", source="discovered"),
+        ]
+        with mock.patch.object(xs, "resolve_device", side_effect=devices):
+            with mock.patch.object(xs, "play_device", side_effect=fake_play):
+                msg = xs.play_url("http://192.168.3.84:9527/a.mp3")
+        self.assertIn("xiaodu playing", msg)
+        self.assertEqual(played, ["192.168.3.47", "192.168.3.48"])
+
+    def test_play_from_params_uses_asset_url(self) -> None:
+        """asset_ref(audio) → asset.http_url() → 交给小度播放；产出 status_text。"""
+        from mac_edge.asset.types import AssetRef
+
+        ref = AssetRef(asset_id="asset_a1", type="audio", mime_type="audio/mpeg")
+        asset = mock.MagicMock()
+        asset.require_ref.return_value = ref
+        asset.http_url.return_value = "http://192.168.3.84:9527/asset_a1.mp3"
+        with mock.patch.object(xs, "play_url", return_value="xiaodu playing on 小度") as fn:
+            msg, outputs = xs.play_from_params({"asset_ref": ref.to_dict()}, asset=asset)
+        self.assertEqual(fn.call_args[0][0], "http://192.168.3.84:9527/asset_a1.mp3")
+        self.assertIn("xiaodu playing", msg)
+        self.assertEqual(outputs["status_text"], "已在小度音箱播放最新音频")
+        self.assertEqual(outputs["asset_id"], "asset_a1")
+
+    def test_play_from_params_rejects_non_audio(self) -> None:
+        from mac_edge.asset.types import AssetError, AssetRef
+
+        asset = mock.MagicMock()
+        asset.require_ref.return_value = AssetRef(asset_id="img_1", type="image", mime_type="image/jpeg")
+        with self.assertRaises(xs.XiaoduSpeakerError) as ctx:
+            xs.play_from_params({"asset_ref": "{}"}, asset=asset)
+        self.assertIn("audio", str(ctx.exception))
+
+        asset.require_ref.side_effect = AssetError("missing or invalid asset_ref")
+        with self.assertRaises(xs.XiaoduSpeakerError):
+            xs.play_from_params({}, asset=asset)
+
+    def test_advertises_xiaodu_play(self) -> None:
+        """xiaodu.speaker 服务同时广告 xiaodu.speak 与 xiaodu.play。"""
+        from mac_edge.services import default_services
+
+        env = {"MAC_EDGE_ROLE": "laptop", "MAC_EDGE_SERVICE_WHITELIST": ""}
+        with mock.patch.dict(os.environ, env, clear=False):
+            with mock.patch.object(xs, "xiaodu_configured", return_value=True):
+                with mock.patch(
+                    "mac_edge.services.xiaodu_configured", return_value=True, create=True
+                ):
+                    ids = {
+                        str(c["capability_id"])
+                        for s in default_services()
+                        for c in (s.get("capabilities") or [])
+                    }
+        self.assertIn("xiaodu.speak", ids)
+        self.assertIn("xiaodu.play", ids)
+
     def test_speak_from_params_requires_text(self) -> None:
         with self.assertRaises(xs.XiaoduSpeakerError) as ctx:
             xs.speak_from_params({})
