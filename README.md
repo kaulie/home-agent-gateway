@@ -56,13 +56,20 @@ curl 127.0.0.1:9528/health
 | 监听 | 8790（voice stream）· 8000（小度 TTS 拉流）· **9528（健康检查，由 `scripts/health_server.py` 提供）** |
 | 契约 | `startCmd/stopCmd/restartCmd = bash scripts/{start,stop,restart}.sh`；`port=9528`；`healthUrl=http://127.0.0.1:9528/health` |
 | 运行期文件 | `<runtime>/backend/{.env, data/, runtime.pid, server.log}` —— `data/` 同时是 Edge 的数据目录（`MAC_EDGE_DATA_DIR`） |
+| 数据库 | **代码 / 运行期数据之外**：`MAC_EDGE_DB_DIR=/Users/gaolei/database/home-agent-gateway`（Edge 只有一个库 `ncm_songs.sqlite3`，见 `mac/src/mac_edge/db_paths.py`） |
 | venv | `<runtime>/backend/data/.venv`（部署保留，不用每次重装依赖） |
 
 ```ini
 # <runtime>/backend/.env（含密钥，不入 git；模板见 mac/.env.example）
 MAC_EDGE_DATA_DIR=/Users/gaolei/runtime/home-agent-gateway/backend/data
+MAC_EDGE_DB_DIR=/Users/gaolei/database/home-agent-gateway
 MAC_EDGE_HEALTH_PORT=9528
 ```
+
+**库目录优先级**（`mac/src/mac_edge/db_paths.py`）：
+`MAC_EDGE_NCM_SONGS_DB`（单库）> `MAC_EDGE_DB_DIR` > `MAC_EDGE_DATA_DIR` > `<mac>/data`。
+不设 `MAC_EDGE_DB_DIR` 时行为与上游一致（库就在数据目录里）；录音 / 各能力缓存 / JSON 状态
+仍按 `MAC_EDGE_DATA_DIR` 走，只有 **SQLite 库**被拆出去。
 
 ## 相对上游的改动（拆分时）
 
