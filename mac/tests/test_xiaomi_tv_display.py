@@ -162,11 +162,10 @@ class DiscoverCacheWolTests(unittest.TestCase):
     def cache_file(self) -> Path:
         return Path(self.tmp.name) / "xiaomi_tv_renderer.json"
 
-    def _seed_cache(self, location: str) -> None:
-        self.cache_file.write_text(
-            json.dumps({"location": location, "friendly_name": "小米电视 S Pro"}),
-            encoding="utf-8",
-        )
+    def _seed_cache(self, location: str, **extra: object) -> None:
+        payload = {"location": location, "friendly_name": "小米电视 S Pro"}
+        payload.update(extra)
+        self.cache_file.write_text(json.dumps(payload), encoding="utf-8")
 
     def test_cache_hit_skips_ssdp(self) -> None:
         self._seed_cache(_TV_LOC)
@@ -202,7 +201,7 @@ class DiscoverCacheWolTests(unittest.TestCase):
 
         with self.assertRaises(XiaomiTvError) as ctx:
             discover_renderer(search_fn=lambda: [], fetch_fn=fetch_fn)
-        self.assertIn("没有发现 DLNA 电视", str(ctx.exception))
+        self.assertIn("没找到小米电视", str(ctx.exception))
 
     def test_ssdp_second_round_after_empty_first(self) -> None:
         calls = {"n": 0}
@@ -214,6 +213,64 @@ class DiscoverCacheWolTests(unittest.TestCase):
         out = discover_renderer(search_fn=search_fn, fetch_fn=lambda url: _DESC)
         self.assertEqual(out["friendly_name"], "小米电视 S Pro")
         self.assertEqual(calls["n"], 2)
+
+    def test_stale_cache_is_dropped(self) -> None:
+        """缓存过期（电视换 IP / 不在线）→ 丢掉缓存，别让下次投屏又白等一趟单播。"""
+        self._seed_cache("http://192.168.3.99:49152/description.xml")
+        with self.assertRaises(XiaomiTvError):
+            discover_renderer(
+                search_fn=lambda: [],
+                fetch_fn=lambda url: (_ for _ in ()).throw(
+                    httpx.RequestError("conn refused")
+                ),
+            )
+        self.assertFalse(self.cache_file.exists(), "过期缓存应被删掉")
+
+    def test_wol_uses_mac_learned_from_cache(self) -> None:
+        """没配 MAC 时，用上次投屏从 ARP 学到的 MAC 发 WoL（电视深度休眠也能唤醒）。"""
+        wols: list[str] = []
+        self._seed_cache(
+            "http://192.168.3.99:49152/description.xml", wol_mac="aa:bb:cc:dd:ee:ff"
+        )
+        with self.assertRaises(XiaomiTvError):
+            discover_renderer(
+                search_fn=lambda: [],
+                fetch_fn=lambda url: (_ for _ in ()).throw(
+                    httpx.RequestError("conn refused")
+                ),
+                wol_fn=wols.append,
+                sleep_fn=lambda _s: None,
+            )
+        self.assertEqual(wols, ["aa:bb:cc:dd:ee:ff"])
+
+    def test_learns_mac_on_success(self) -> None:
+        """投屏成功时把电视 MAC 记进缓存（下次休眠可 WoL）。"""
+        with patch(
+            "mac_edge.plugins.xiaomi_tv_display._arp_mac",
+            return_value="aa:bb:cc:dd:ee:ff",
+        ):
+            out = discover_renderer(
+                search_fn=lambda: [_TV_LOC], fetch_fn=lambda url: _DESC
+            )
+        self.assertEqual(out["friendly_name"], "小米电视 S Pro")
+        cached = json.loads(self.cache_file.read_text(encoding="utf-8"))
+        self.assertEqual(cached["wol_mac"], "aa:bb:cc:dd:ee:ff")
+
+    def test_error_messages_are_user_facing_not_env_talk(self) -> None:
+        """失败消息给用户看：不能出现 MAC_EDGE_* 之类的运维细节（那些进日志）。"""
+        # ① 完全没有 DLNA 应答
+        with self.assertRaises(XiaomiTvError) as ctx1:
+            discover_renderer(search_fn=lambda: [], fetch_fn=lambda url: _DESC)
+        self.assertIn("没找到小米电视", str(ctx1.exception))
+        self.assertNotIn("MAC_EDGE_", str(ctx1.exception))
+
+        # ② 有 DLNA 设备但不是电视（如小度）
+        with self.assertRaises(XiaomiTvError) as ctx2:
+            discover_renderer(
+                search_fn=lambda: [_TV_LOC], fetch_fn=lambda url: _XIAODU_DESC
+            )
+        self.assertIn("都不是那台小米电视", str(ctx2.exception))
+        self.assertNotIn("MAC_EDGE_", str(ctx2.exception))
 
     def test_wol_sent_when_configured_and_nothing_found(self) -> None:
         wols: list[str] = []

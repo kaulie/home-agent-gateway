@@ -9,7 +9,9 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import socket
+import subprocess
 import tempfile
 import time
 from pathlib import Path
@@ -193,6 +195,8 @@ def _write_cache(path: Path, location: str, parsed: dict[str, str]) -> None:
                     "location": location,
                     "friendly_name": parsed.get("friendly_name", ""),
                     "control_url": parsed.get("control_url", ""),
+                    # 电视开机时从 ARP 学到，之后深度休眠可据此 WoL 唤醒
+                    "wol_mac": str(parsed.get("wol_mac", "") or ""),
                     "saved_at": int(time.time()),
                 },
                 ensure_ascii=False,
@@ -224,6 +228,31 @@ def _send_wol(mac: str) -> None:
         s.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
         for _ in range(3):
             s.sendto(payload, ("255.255.255.255", 9))
+
+
+def _arp_mac(ip: str) -> str:
+    """从本机 ARP 表里读这台设备的 MAC（电视开机时探到过就能读到），读不到返回空串。
+
+    用途：把 MAC 记进发现缓存，之后电视深度休眠（组播不应答、ARP 也查不到）时还能发 WoL 唤醒。
+    """
+    host = (ip or "").strip()
+    if not host:
+        return ""
+    try:
+        out = subprocess.run(
+            ["arp", "-n", host], capture_output=True, text=True, timeout=3
+        ).stdout
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    m = re.search(r"\b([0-9a-f]{1,2}(?::[0-9a-f]{1,2}){5})\b", out, re.IGNORECASE)
+    return m.group(1).lower() if m else ""
+
+
+def _host_of(url: str) -> str:
+    try:
+        return urlparse(url).hostname or ""
+    except ValueError:
+        return ""
 
 
 def discover_renderer(
@@ -265,7 +294,9 @@ def discover_renderer(
                 parsed.get("control_url"),
             )
             return parsed
-        log.info("xiaomi tv cache stale (%s), fall back to SSDP", loc)
+        # 缓存过期（电视换了 IP / 不在线）：丢掉它，别让每次投屏都先白等一趟单播
+        log.info("xiaomi tv cache stale (%s), drop + fall back to SSDP", loc)
+        lan.drop_cache(cache)
 
     # 2) SSDP 多轮（Wi-Fi 组播抖动，一轮空手不代表电视不在）
     search = search_fn or (lambda: _ssdp_search(min(timeout_sec, 3.0)))
@@ -275,18 +306,30 @@ def discover_renderer(
         if locations:
             break
 
-    # 3) 配了电视 MAC 时发 WoL 魔术包唤醒（深度休眠），稍等网络栈起来再补一轮
+    # 3) 没有组播应答时发 WoL 唤醒（电视深度休眠）：MAC 取 env，其次用上次投屏时学到的 MAC，
+    #    唤醒后稍等网络栈起来再补一轮。电视完全断电（拔插头）则网络无法唤醒，属物理限制。
     if not locations:
         mac = (os.environ.get("MAC_EDGE_XIAOMI_TV_MAC") or "").strip()
+        if not mac and cached is not None:
+            mac = str(cached.get("wol_mac") or "").strip()
         if mac:
+            log.info("xiaomi tv not seen on SSDP → WoL wake mac=%s", mac)
             (wol_fn or _send_wol)(mac)
             (sleep_fn or time.sleep)(3.0)
             locations = search()
 
     if not locations:
+        # 用户看到的必须是「能动手做点什么」的话；env 变量那套留给日志（运维）。
+        log.warning(
+            "投电视失败：局域网里没有发现 DLNA 电视（%s 没应答组播）。"
+            "可设 MAC_EDGE_XIAOMI_TV_HOST 固定地址、MAC_EDGE_XIAOMI_TV_MAC 网络唤醒；"
+            "当前 MAC_EDGE_XIAOMI_TV_NAME=%r HOST=%r",
+            _cache_path().parent,
+            os.environ.get("MAC_EDGE_XIAOMI_TV_NAME") or "",
+            os.environ.get("MAC_EDGE_XIAOMI_TV_HOST") or "",
+        )
         raise XiaomiTvError(
-            "投电视失败：局域网里没有发现 DLNA 电视。请打开小米电视投屏/DLNA，"
-            "或设置 MAC_EDGE_XIAOMI_TV_HOST；深度休眠可配 MAC_EDGE_XIAOMI_TV_MAC 网络唤醒。"
+            "没找到小米电视。确认电视已通电、和我在同一个 Wi-Fi 上，并打开投屏/DLNA。"
         )
     candidates: list[tuple[str, dict[str, str]]] = []
     for loc in locations:
@@ -305,9 +348,18 @@ def discover_renderer(
             continue
         candidates.append((loc, parsed))
     if not candidates:
+        found = "、".join(sorted({l for l in locations}))[:200]
+        log.warning(
+            "投电视失败：发现了 DLNA 设备但没有匹配的小米电视（候选：%s）。"
+            "可设 MAC_EDGE_XIAOMI_TV_NAME / MAC_EDGE_XIAOMI_TV_HOST 指定；"
+            "当前 NAME=%r HOST=%r",
+            found,
+            os.environ.get("MAC_EDGE_XIAOMI_TV_NAME") or "",
+            os.environ.get("MAC_EDGE_XIAOMI_TV_HOST") or "",
+        )
         raise XiaomiTvError(
-            "投电视失败：发现了 DLNA 设备，但没有匹配的小米电视。"
-            "请设置 MAC_EDGE_XIAOMI_TV_NAME 或 HOST。"
+            "附近有 DLNA 设备，但都不是那台小米电视。确认电视开着并打开投屏/DLNA，"
+            "或把电视的 IP 告诉我。"
         )
     chosen_loc, chosen = candidates[0]
     log.info(
@@ -315,6 +367,11 @@ def discover_renderer(
         chosen.get("friendly_name"),
         chosen.get("control_url"),
     )
+    # 顺手把 MAC 学下来存进缓存：下次电视深度休眠时能直接 WoL 唤醒
+    wol_mac = _arp_mac(_host_of(chosen_loc))
+    if wol_mac:
+        chosen = dict(chosen)
+        chosen["wol_mac"] = wol_mac
     _write_cache(cache, chosen_loc, chosen)
     return chosen
 
