@@ -228,3 +228,6 @@ GIT_REPO_URL
 mac/.venv/
 mac/data/
 mac/logs/
+
+# 上游误提交的本地 ncm 歌库（运行期按 MAC_EDGE_DATA_DIR 生成/使用）
+mac/src/data/
