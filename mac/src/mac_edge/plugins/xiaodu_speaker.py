@@ -16,6 +16,7 @@ from typing import Any
 from urllib.parse import urlparse
 
 from mac_edge.plugins import av_transport as av
+from mac_edge.plugins import media_url
 from mac_edge.plugins import lan_discovery as lan
 
 log = logging.getLogger("mac_edge.xiaodu_speaker")
@@ -568,6 +569,7 @@ def play_from_params(
     params: dict[str, Any],
     *,
     asset: Any,
+    probe_fn: Any = None,
     **_kwargs: Any,
 ) -> tuple[str, dict[str, Any]]:
     """xiaodu.play 入口：asset_ref（audio）→ 小度 DLNA 播放。"""
@@ -589,6 +591,13 @@ def play_from_params(
     mime = str(getattr(ref, "mime_type", "") or "").strip().lower()
     if mime and not mime.startswith("audio/"):
         raise XiaoduSpeakerError(f"xiaodu.play 需要音频 mime，当前是 {mime}")
+
+    # 播放前预检：小度是「盲拉」字节，取不到时 Play 也会返回 200（见 plugins/media_url.py）
+    probe = probe_fn or media_url.verify_media_url
+    try:
+        probe(url, what="音频")
+    except media_url.MediaUrlError as e:
+        raise XiaoduSpeakerError(str(e)) from e
 
     msg = play_url(url)
     asset_id = getattr(ref, "asset_id", None)

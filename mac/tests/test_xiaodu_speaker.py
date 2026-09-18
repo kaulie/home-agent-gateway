@@ -89,7 +89,11 @@ class XiaoduSpeakerTests(unittest.TestCase):
         asset.require_ref.return_value = ref
         asset.http_url.return_value = "http://192.168.3.84:9527/asset_a1.mp3"
         with mock.patch.object(xs, "play_url", return_value="xiaodu playing on 小度") as fn:
-            msg, outputs = xs.play_from_params({"asset_ref": ref.to_dict()}, asset=asset)
+            msg, outputs = xs.play_from_params(
+                {"asset_ref": ref.to_dict()},
+                asset=asset,
+                probe_fn=lambda *_a, **_k: None,  # 单测不探网络
+            )
         self.assertEqual(fn.call_args[0][0], "http://192.168.3.84:9527/asset_a1.mp3")
         self.assertIn("xiaodu playing", msg)
         self.assertEqual(outputs["status_text"], "已在小度音箱播放最新音频")

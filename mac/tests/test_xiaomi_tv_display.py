@@ -392,6 +392,7 @@ class AudioFromParamsTests(unittest.TestCase):
             {"asset_ref": _AUDIO_REF.to_dict()},
             asset=self._asset(),
             play_fn=play_fn,
+            probe_fn=lambda *_a, **_k: None,  # 单测不探网络（见 tests/test_media_url.py）
         )
         self.assertEqual(played, [_AUDIO_URL])
         self.assertIn("cast_status=accepted", msg)
@@ -416,7 +417,7 @@ class AudioFromParamsTests(unittest.TestCase):
             "missing or invalid asset_ref (AssetRef required)"
         )
         with self.assertRaises(XiaomiTvError):
-            audio_from_params({}, asset=asset, play_fn=lambda *a, **k: "x")
+            audio_from_params({}, asset=asset, play_fn=lambda *a, **k: "x", probe_fn=lambda *_a, **_k: None)
 
 
 class AudioAdvertiseTests(unittest.TestCase):

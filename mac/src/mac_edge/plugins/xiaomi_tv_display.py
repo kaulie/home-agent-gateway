@@ -23,6 +23,7 @@ from xml.sax.saxutils import escape as xml_escape
 import httpx
 
 from mac_edge.plugins import av_transport as av
+from mac_edge.plugins import media_url
 from mac_edge.plugins import lan_discovery as lan
 from mac_edge.plugins.chromecast_display import (
     DEFAULT_SLIDESHOW_INTERVAL_SEC,
@@ -414,6 +415,20 @@ def soap_action(
         raise XiaomiTvError(f"投电视失败：DLNA {action} HTTP {status}。")
 
 
+def _is_cap_asset(asset: Any) -> bool:
+    """鸭子类型检查（与 display.audio / xiaodu.play / pdf_display 同口径）。"""
+    return asset is not None and hasattr(asset, "require_ref")
+
+
+def _verify_media(url: str, *, timeout_sec: float, what: str, probe_fn: Any = None) -> None:
+    """播放前预检（见 plugins/media_url.py）：取不到就明确失败，别让 DLNA 盲发。"""
+    probe = probe_fn or media_url.verify_media_url
+    try:
+        probe(url, timeout_sec=timeout_sec, what=what)
+    except media_url.MediaUrlError as e:
+        raise XiaomiTvError(str(e)) from e
+
+
 def _normalize_media_url(url: str, *, field: str) -> str:
     value = (url or "").strip()
     if not value:
@@ -541,18 +556,19 @@ def photo_from_params(
     *,
     asset: Any,
     timeout_sec: float = 10.0,
+    probe_fn: Any = None,
     **_kwargs: Any,
 ) -> tuple[str, dict[str, Any]]:
-    from mac_edge.asset.sdk import CapAsset
     from mac_edge.asset.types import AssetError
 
-    if not isinstance(asset, CapAsset):
+    if not _is_cap_asset(asset):
         raise XiaomiTvError("display.photo requires CapAsset (Runtime SDK)")
     try:
         ref = asset.require_ref(params, "asset_ref")
         photo_url = asset.http_url(ref)
     except AssetError as e:
         raise XiaomiTvError(str(e)) from e
+    _verify_media(photo_url, timeout_sec=timeout_sec, what="图片", probe_fn=probe_fn)
     msg = play_photo(photo_url, timeout_sec=timeout_sec)
     asset_id = getattr(ref, "asset_id", None) or (
         ref.get("asset_id") if isinstance(ref, dict) else None
@@ -639,6 +655,7 @@ def audio_from_params(
     asset: Any,
     timeout_sec: float = 10.0,
     play_fn: Callable[..., str] | None = None,
+    probe_fn: Any = None,
     **_kwargs: Any,
 ) -> tuple[str, dict[str, Any]]:
     """display.audio：把 audio Asset 交给电视 DLNA 播放（不做 TTS、不投图）。"""
@@ -656,6 +673,7 @@ def audio_from_params(
         raise XiaomiTvError(f"display.audio 需要 audio Asset，当前是 {asset_type}")
     if mime_type and not mime_type.startswith("audio/"):
         raise XiaomiTvError(f"display.audio 需要音频 mime，当前是 {mime_type}")
+    _verify_media(audio_url, timeout_sec=timeout_sec, what="音频", probe_fn=probe_fn)
     player = play_fn or play_audio
     msg = player(audio_url, mime_type=mime_type, timeout_sec=timeout_sec)
     asset_id = _ref_str(ref, "asset_id") or None
@@ -676,18 +694,20 @@ def slideshow_from_params(
     *,
     asset: Any,
     timeout_sec: float = 10.0,
+    probe_fn: Any = None,
     **_kwargs: Any,
 ) -> tuple[str, dict[str, Any]]:
-    from mac_edge.asset.sdk import CapAsset
     from mac_edge.asset.types import AssetError
 
-    if not isinstance(asset, CapAsset):
+    if not _is_cap_asset(asset):
         raise XiaomiTvError("display.slideshow requires CapAsset (Runtime SDK)")
     try:
         refs = asset.require_refs(params, "asset_refs")
         urls = [asset.http_url(ref) for ref in refs]
     except AssetError as e:
         raise XiaomiTvError(str(e)) from e
+    for one_url in urls:
+        _verify_media(one_url, timeout_sec=timeout_sec, what="图片", probe_fn=probe_fn)
     interval = DEFAULT_SLIDESHOW_INTERVAL_SEC
     raw_interval = (params.get("interval_sec") or "").strip()
     if raw_interval:
