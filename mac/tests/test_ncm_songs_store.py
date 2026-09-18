@@ -9,6 +9,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+from mac_edge import db_paths
 from mac_edge.ncm_songs import store as ncm_store
 from mac_edge.ncm_songs.store import NcmSongsError
 
@@ -340,6 +341,47 @@ class NcmSongsStoreTests(unittest.TestCase):
                 ncm_store.db_path().resolve(),
                 (Path(self._tmp.name) / "ncm_songs.sqlite3").resolve(),
             )
+
+    def test_db_path_follows_mac_edge_db_dir(self) -> None:
+        """MAC_EDGE_DB_DIR 优先于 MAC_EDGE_DATA_DIR：库可以搬出数据目录（本机生产就这么跑）。"""
+        db_dir = Path(self._tmp.name) / "database"
+        with mock.patch.dict(
+            os.environ,
+            {"MAC_EDGE_DATA_DIR": self._tmp.name, "MAC_EDGE_DB_DIR": str(db_dir)},
+        ):
+            ncm_store.reset(path=None)
+            self.assertEqual(
+                ncm_store.db_path().resolve(),
+                (db_dir / "ncm_songs.sqlite3").resolve(),
+            )
+
+    def test_db_dir_defaults_to_data_dir(self) -> None:
+        """没设 MAC_EDGE_DB_DIR 时库仍在数据目录里（历史行为不变）。"""
+        with mock.patch.dict(
+            os.environ, {"MAC_EDGE_DATA_DIR": self._tmp.name}, clear=False
+        ):
+            os.environ.pop("MAC_EDGE_DB_DIR", None)
+            self.assertEqual(
+                db_paths.db_dir().resolve(), Path(self._tmp.name).resolve()
+            )
+            self.assertEqual(
+                db_paths.db_file("x.sqlite3").resolve(),
+                (Path(self._tmp.name) / "x.sqlite3").resolve(),
+            )
+
+    def test_single_db_override_wins(self) -> None:
+        """MAC_EDGE_NCM_SONGS_DB（单库覆盖）优先级最高。"""
+        one = Path(self._tmp.name) / "one.sqlite3"
+        with mock.patch.dict(
+            os.environ,
+            {
+                "MAC_EDGE_DATA_DIR": self._tmp.name,
+                "MAC_EDGE_DB_DIR": str(Path(self._tmp.name) / "database"),
+                "MAC_EDGE_NCM_SONGS_DB": str(one),
+            },
+        ):
+            ncm_store.reset(path=None)
+            self.assertEqual(ncm_store.db_path().resolve(), one.resolve())
 
 
 if __name__ == "__main__":

@@ -1,6 +1,7 @@
 """Mac Edge SQLite catalog for ncm-cli search records.
 
-Database file: ``{MAC_EDGE_DATA_DIR or mac/data}/ncm_songs.sqlite3``
+Database file: ``${MAC_EDGE_DB_DIR or MAC_EDGE_DATA_DIR or mac/data}/ncm_songs.sqlite3``
+（库目录见 `mac_edge/db_paths.py`：本机生产放在 `/Users/gaolei/database/home-agent-gateway`）
 Not Brain ``brain.sqlite3``. Contract: ``docs/mac-ncm-songs-db.md``.
 """
 
@@ -16,6 +17,8 @@ import time
 from pathlib import Path
 from typing import Any
 
+from mac_edge import db_paths
+
 log = logging.getLogger("mac_edge.ncm_songs")
 
 _SQL_DIR = Path(__file__).resolve().parents[3] / "sql"
@@ -29,21 +32,15 @@ class NcmSongsError(Exception):
     pass
 
 
-def _project_data_dir() -> Path:
-    return Path(__file__).resolve().parents[2] / "data"
-
-
 def data_dir() -> Path:
-    raw = (os.environ.get("MAC_EDGE_DATA_DIR") or "").strip()
-    if raw:
-        return Path(raw).expanduser()
-    return _project_data_dir()
+    """运行期数据目录（兼容旧调用方；库目录请用 db_path()/db_paths.db_dir()）。"""
+    return db_paths.data_dir()
 
 
 def db_path() -> Path:
     if _path_override is not None:
         return _path_override
-    return data_dir() / "ncm_songs.sqlite3"
+    return db_paths.db_file("ncm_songs.sqlite3")
 
 
 def connect() -> sqlite3.Connection:
