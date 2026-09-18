@@ -237,5 +237,10 @@ logs/
 *.log
 *.out
 
+# 小游戏 dist 是 vite 构建产物：随仓提交（9 KB）保证「每次部署后 mac.game.host 都能起」，
+# 所以对上面的通用 dist/ 规则开个口子（改 src 后 `npm run build` 更新这两个文件）。
+!games/coin-catcher/dist/
+!games/coin-catcher/dist/**
+
 # 上游误提交的本地 ncm 歌库（运行期按 MAC_EDGE_DATA_DIR 生成/使用）
 mac/src/data/
