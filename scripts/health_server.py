@@ -32,7 +32,11 @@ _PORT = int(os.environ.get("MAC_EDGE_HEALTH_PORT") or 9528)
 _BACKEND = _RUNTIME / "backend"
 _PID_FILE = _BACKEND / "runtime.pid"
 _LOG_FILE = _BACKEND / "server.log"
-_DATA_DIR = _BACKEND / "data"
+# 数据目录跟着 MAC_EDGE_DATA_DIR 走（可指到代码之外，如 ~/artifact-storage/home-agent-gateway）；
+# 不设时退回 <runtime>/backend/data（venv 位，历史默认）。
+_DATA_DIR = Path(
+    os.environ.get("MAC_EDGE_DATA_DIR") or (_BACKEND / "data")
+).expanduser()
 
 _HEARTBEAT_RE = re.compile(r"heartbeat OK(?P<rest>.*)$")
 
