@@ -24,6 +24,10 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "${ROOT}"
 
+# 平台打包环境的 PATH 可能不含 Homebrew（npm 在 /usr/local/bin 或 /opt/homebrew/bin）——
+# 实测踩过：build.sh 里 `command -v npm` 找不到 → 小游戏 dist 没进包 → 每次部署把它删掉。
+export PATH="/usr/local/bin:/opt/homebrew/bin:${PATH}"
+
 VERSION="${APP_VERSION:-dev}"
 OUT="${ROOT}/outputs"
 
