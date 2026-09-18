@@ -354,6 +354,129 @@ class XiaoduDiscoveryTests(unittest.TestCase):
 
 
 
+class TransportControlTests(unittest.TestCase):
+    """pause / resume / stop：小度一套、小米电视一套（共用 av_transport 解析）。"""
+
+    def test_parse_action_aliases(self) -> None:
+        from mac_edge.plugins import av_transport as av
+
+        for raw, want in (
+            ("pause", av.ACTION_PAUSE),
+            ("暂停", av.ACTION_PAUSE),
+            ("先停一下", av.ACTION_PAUSE),
+            (None, av.ACTION_PAUSE),  # 缺省 = 暂停（最常见诉求）
+            ("resume", av.ACTION_RESUME),
+            ("继续播放", av.ACTION_RESUME),
+            ("接着放", av.ACTION_RESUME),
+            ("stop", av.ACTION_STOP),
+            ("停止小度播放", av.ACTION_STOP) if False else ("停止", av.ACTION_STOP),
+            ("别放了", av.ACTION_STOP),
+        ):
+            with self.subTest(raw=raw):
+                self.assertEqual(av.parse_action(raw), want)
+
+    def test_parse_action_rejects_unknown(self) -> None:
+        from mac_edge.plugins import av_transport as av
+
+        with self.assertRaises(av.TransportActionError):
+            av.parse_action("快进")
+
+    def test_xiaodu_control_sends_pause(self) -> None:
+        calls: list[tuple[str, str]] = []
+
+        def fake_post(device: xs.XiaoduDevice, action: str, body: str, **kw: object) -> None:
+            calls.append((action, body))
+
+        with mock.patch.object(xs, "_post", side_effect=fake_post):
+            with mock.patch.object(
+                xs,
+                "resolve_device",
+                return_value=xs.XiaoduDevice(ip="192.168.3.47", control_url="http://x/av", source="cache"),
+            ):
+                msg = xs.control("暂停")
+        self.assertIn("已暂停", msg)
+        self.assertEqual(calls[0][0].rsplit("#", 1)[-1], "Pause")
+        self.assertIn("<InstanceID>0</InstanceID>", calls[0][1])
+
+    def test_xiaodu_control_idle_device_is_not_an_error(self) -> None:
+        """设备没在放东西（UPnP 701）→ 给用户人话，不报错。"""
+        with mock.patch.object(
+            xs,
+            "resolve_device",
+            return_value=xs.XiaoduDevice(ip="192.168.3.47", source="cache"),
+        ):
+            with mock.patch.object(
+                xs,
+                "_post",
+                side_effect=xs.XiaoduSpeakerError("UPnP HTTP 500: <errorCode>701</errorCode>"),
+            ):
+                text, outputs = xs.control_from_params({"action": "pause"})
+        self.assertIn("没有在播放", text)
+        self.assertEqual(outputs["status_text"], text)
+
+    def test_xiaodu_control_maps_three_actions(self) -> None:
+        seen: list[str] = []
+
+        def fake_post(device: xs.XiaoduDevice, action: str, body: str, **kw: object) -> None:
+            seen.append(action.rsplit("#", 1)[-1])
+
+        with mock.patch.object(xs, "_post", side_effect=fake_post):
+            with mock.patch.object(
+                xs,
+                "resolve_device",
+                return_value=xs.XiaoduDevice(ip="192.168.3.47", control_url="http://x/av"),
+            ):
+                for raw in ("pause", "resume", "stop"):
+                    xs.control(raw)
+        self.assertEqual(seen, ["Pause", "Play", "Stop"])
+
+    def test_tv_control_sends_pause_and_maps_actions(self) -> None:
+        from mac_edge.plugins import xiaomi_tv_display as tv
+
+        posted: list[str] = []
+
+        def post_fn(_url: str, envelope: str, _headers: dict[str, str]) -> int:
+            posted.append(envelope)
+            return 200
+
+        renderer = {"friendly_name": "小米电视 S Pro", "control_url": "http://192.168.3.20/av"}
+        for raw, want in (("暂停", "Pause"), ("继续", "Play"), ("停止", "Stop")):
+            with self.subTest(raw=raw):
+                posted.clear()
+                msg = tv.control_audio(raw, renderer=renderer, post_fn=post_fn)
+                self.assertIn("dlna", msg)
+                self.assertIn(want, posted[0])
+
+    def test_tv_control_from_params_status_text(self) -> None:
+        from mac_edge.plugins import xiaomi_tv_display as tv
+
+        with mock.patch.object(tv, "control_audio", return_value="dlna pause ok → tv") as fn:
+            text, outputs = tv.audio_control_from_params({"action": "暂停"})
+        self.assertEqual(fn.call_args[0][0], "暂停")
+        self.assertEqual(text, "小米电视已暂停")
+        self.assertEqual(outputs["status_text"], "小米电视已暂停")
+
+    def test_both_services_advertise_control_caps(self) -> None:
+        from mac_edge.services import default_services
+
+        env = {
+            "MAC_EDGE_ROLE": "laptop",
+            "MAC_EDGE_SERVICE_WHITELIST": "",
+            "MAC_EDGE_DISPLAY_BACKEND": "xiaomi",
+            "MAC_EDGE_XIAOMI_TV": "1",
+        }
+        with mock.patch.dict(os.environ, env, clear=False):
+            with mock.patch("mac_edge.services.xiaodu_configured", return_value=True, create=True):
+                services = default_services()
+        caps = {
+            str(c["capability_id"]): str(s["service_id"])
+            for s in services
+            for c in (s.get("capabilities") or [])
+        }
+        self.assertEqual(caps.get("xiaodu.control"), "xiaodu.speaker")
+        self.assertEqual(caps.get("display.audio.control"), "xiaomi.tv.display")
+
+
 if __name__ == "__main__":
     unittest.main()
 

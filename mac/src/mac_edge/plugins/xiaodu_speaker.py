@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
+from mac_edge.plugins import av_transport as av
 from mac_edge.plugins import lan_discovery as lan
 
 log = logging.getLogger("mac_edge.xiaodu_speaker")
@@ -36,6 +37,18 @@ _STOP_XML = (
     "</u:Stop>"
     "</s:Body></s:Envelope>"
 )
+_AV_TRANSPORT = 'urn:schemas-upnp-org:service:AVTransport:1'
+_PAUSE_XML = (
+    '<?xml version="1.0"?>'
+    '<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" '
+    's:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/">'
+    '<s:Body>'
+    '<u:Pause xmlns:u="urn:schemas-upnp-org:service:AVTransport:1">'
+    '<InstanceID>0</InstanceID>'
+    '</u:Pause>'
+    '</s:Body></s:Envelope>'
+)
+
 _PLAY_XML = (
     '<?xml version="1.0"?>'
     '<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" '
@@ -583,3 +596,45 @@ def play_from_params(
         "status_text": "已在小度音箱播放最新音频",
         "asset_id": str(asset_id) if asset_id else "",
     }
+
+
+# ---------------------------------------------------------------------------
+# xiaodu.control：暂停 / 继续 / 停止小度**当前正在播的内容**（DLNA AVTransport）
+#
+# 与 xiaodu.play 的关系：play 负责「放什么」，control 负责「放着的这个怎么办」
+# （暂停/继续/停止）。intent 790「停止小度播放」当时没有能力可用，这条就是补它。
+# ---------------------------------------------------------------------------
+
+_TRANSPORT_SOAP = {  # action → (SOAP 动作名, 现成 envelope)
+    av.ACTION_PAUSE: ("Pause", _PAUSE_XML),
+    av.ACTION_RESUME: ("Play", _PLAY_XML),
+    av.ACTION_STOP: ("Stop", _STOP_XML),
+}
+
+
+def control(action: str, *, device: XiaoduDevice | None = None) -> str:
+    """给小度发 Pause/Play/Stop；设备「没在放东西」时给出人话而不是报错。"""
+    try:
+        act = av.parse_action(action)
+    except av.TransportActionError as e:
+        raise XiaoduSpeakerError(str(e)) from e
+    dev = device or resolve_device()
+    soap, xml = _TRANSPORT_SOAP[act]
+    try:
+        _post(dev, f"{_AV_TRANSPORT}#{soap}", xml)
+    except XiaoduSpeakerError as e:
+        # UPnP 701 = Transport is not playing：暂停/停止一个空闲设备不是错误
+        if act in (av.ACTION_PAUSE, av.ACTION_STOP) and (
+            "701" in str(e) or "Transport is not" in str(e)
+        ):
+            log.info("xiaodu.control %s：设备当前未在播放（%s）", act, e)
+            return f"小度音箱当前没有在播放（{av.label_for(act)}）"
+        raise
+    log.info("xiaodu.control %s device=%s", act, dev.describe())
+    return f"小度音箱{av.label_for(act)}"
+
+
+def control_from_params(params: dict[str, Any], **_kwargs: Any) -> tuple[str, dict[str, Any]]:
+    """xiaodu.control 入口：action=pause/resume/stop（或中文）→ status_text。"""
+    text = control(str(params.get("action") or ""))
+    return text, {"status_text": text}

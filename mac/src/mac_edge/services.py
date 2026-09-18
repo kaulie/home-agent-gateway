@@ -137,6 +137,23 @@ AUDIO_DISPLAY_CAPABILITIES: list[dict[str, Any]] = [
             },
         },
     ),
+    attach(
+        'display.audio.control',
+        input_schema={
+            'action': {
+                'type': 'string',
+                'required': False,
+                'description': 'pause（默认）/ resume / stop；也接受 暂停/继续/停止 等中文',
+            },
+        },
+        output_schema={
+            'status_text': {
+                'type': 'string',
+                'required': True,
+                'description': '中文一句话，如「小米电视已暂停」',
+            },
+        },
+    ),
 ]
 
 # display.pdf / display.pdf.page：PDF 逐页渲染成图投屏 + 翻页。
@@ -389,6 +406,23 @@ XIAODU_SPEAKER_SERVICE: dict[str, Any] = {
                     "type": "string",
                     "required": False,
                     "description": "实际播放的 audio asset_id",
+                },
+            },
+        ),
+        attach(
+            "xiaodu.control",
+            input_schema={
+                "action": {
+                    "type": "string",
+                    "required": False,
+                    "description": "pause（默认）/ resume / stop；也接受 暂停/继续/停止 等中文",
+                },
+            },
+            output_schema={
+                "status_text": {
+                    "type": "string",
+                    "required": True,
+                    "description": "中文一句话，如「小度音箱已暂停」",
                 },
             },
         ),

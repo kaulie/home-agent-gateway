@@ -25,6 +25,7 @@ from mac_edge.plugins.chromecast_display import (
 )
 from mac_edge.plugins.xiaomi_tv_display import (
     XiaomiTvError,
+    audio_control_from_params as xiaomi_audio_control_from_params,
     audio_from_params as xiaomi_audio_from_params,
     display_backend,
     photo_from_params as xiaomi_photo_from_params,
@@ -102,6 +103,7 @@ from mac_edge.plugins.livingroom_light import LivingRoomLightError, set_from_par
 from mac_edge.plugins.notify_speak import NotifySpeakError, prefetch_from_params, speak_from_params
 from mac_edge.plugins.xiaodu_speaker import (
     XiaoduSpeakerError,
+    control_from_params as xiaodu_control_from_params,
     play_from_params as xiaodu_play_from_params,
     speak_from_params as xiaodu_speak_from_params,
 )
@@ -1565,6 +1567,16 @@ def _execute_capability(
             return False, str(e), {}
         except Exception as e:
             return False, f"{type(e).__name__}: {e}", {}
+    if cap == "display.audio.control":
+        try:
+            if display_backend() != "xiaomi":
+                return False, "display.audio.control 需要小米电视 DLNA 显示后端（当前是 Cast）", {}
+            msg, outputs = xiaomi_audio_control_from_params(params)
+            return True, msg, outputs
+        except (XiaomiTvError, AssetError) as e:
+            return False, str(e), {}
+        except Exception as e:
+            return False, f"{type(e).__name__}: {e}", {}
     if cap == "display.pdf":
         try:
             msg, outputs = pdf_display_open_from_params(
@@ -1673,6 +1685,14 @@ def _execute_capability(
             msg, outputs = xiaodu_play_from_params(params, asset=asset)
             return True, msg, outputs
         except (XiaoduSpeakerError, AssetError) as e:
+            return False, str(e), {}
+        except Exception as e:
+            return False, f"{type(e).__name__}: {e}", {}
+    if cap == "xiaodu.control":
+        try:
+            msg, outputs = xiaodu_control_from_params(params)
+            return True, msg, outputs
+        except XiaoduSpeakerError as e:
             return False, str(e), {}
         except Exception as e:
             return False, f"{type(e).__name__}: {e}", {}
