@@ -11,8 +11,11 @@
 #
 # 运行期文件全部放 <runtime>/backend/（平台部署唯一保留的位置）：
 #   backend/.env          密钥 + 运行期配置（模板见 mac/.env.example）
-#   backend/data/         MAC_EDGE_DATA_DIR（edge_id / ledger / 歌库 / 录音 …）+ .venv
+#   backend/data/.venv    依赖 venv（平台保留位）
 #   backend/runtime.pid   本脚本写；backend/server.log  stdout/err
+# 数据与库都在代码/运行期目录之外（平台 --delete 碰不到）：
+#   MAC_EDGE_DATA_DIR    运行期数据（edge_id / ledger / 录音 / 缓存）→ backend/.env 里配
+#   MAC_EDGE_DB_DIR      SQLite 库（ncm_songs.sqlite3）→ 见 mac/src/mac_edge/db_paths.py
 set -euo pipefail
 
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -34,8 +37,8 @@ BACKEND_DIR="${RUNTIME_DIR}/backend"
 ENV_FILE="${BACKEND_DIR}/.env"
 # 老位置：mac/.env（本地开发就是这个位置；run_mac_edge.sh 也会 source 它）
 ENV_FILE_LEGACY="${MAC_DIR}/.env"
-DATA_DIR="${BACKEND_DIR}/data"
-VENV="${DATA_DIR}/.venv"
+RUN_DIR="${BACKEND_DIR}/data"          # 只放 venv（平台保留位；数据在 MAC_EDGE_DATA_DIR）
+VENV="${RUN_DIR}/.venv"
 PY="${VENV}/bin/python"
 REQ="${MAC_DIR}/requirements.txt"
 PID_FILE="${BACKEND_DIR}/runtime.pid"
@@ -78,7 +81,15 @@ if [ -n "${PORT:-}" ] && [ "${PORT}" != "${HEALTH_PORT}" ]; then
   warn "忽略继承来的 PORT=${PORT}（那是别的服务的），健康口用 ${HEALTH_PORT}"
 fi
 
-mkdir -p "${DATA_DIR}" "${BACKEND_DIR}"
+# 运行期数据目录（edge_id / ledger / 录音 / 各能力缓存；SQLite 库另由 MAC_EDGE_DB_DIR 决定）。
+# 解析顺序：shell 里显式 MAC_EDGE_DATA_DIR > backend/.env 的 MAC_EDGE_DATA_DIR > <runtime>/backend/data。
+# 本机生产把它指到代码外（~/artifact-storage/home-agent-gateway），代码/部署都碰不到。
+_ENV_DATA_DIR="$(awk -F= '/^[[:space:]]*MAC_EDGE_DATA_DIR[[:space:]]*=/{gsub(/[[:space:]"]/,"",$2); v=$2} END{print v}' "${ENV_FILE}" 2>/dev/null || true)"
+DATA_DIR="${MAC_EDGE_DATA_DIR:-${_ENV_DATA_DIR:-${RUN_DIR}}}"
+case "${DATA_DIR}" in /*) ;; *) DATA_DIR="${RUNTIME_DIR}/${DATA_DIR}";; esac
+export MAC_EDGE_DATA_DIR="${DATA_DIR}"
+
+mkdir -p "${DATA_DIR}" "${RUN_DIR}" "${BACKEND_DIR}"
 
 # 依赖：mac/requirements.txt（httpx / 声卡 / STT / PDF 渲染等）。缺 venv 现建。
 if [ ! -x "${PY}" ]; then
