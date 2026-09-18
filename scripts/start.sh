@@ -144,6 +144,16 @@ nohup env MAC_EDGE_HEALTH_PORT="${HEALTH_PORT}" \
   >> "${HEALTH_LOG}" 2>&1 < /dev/null &
 echo $! > "${HEALTH_PID_FILE}"
 
+# 健康小服务必须真的起来了：端口被别的（可能是上一次没停干净的本服务）占着时它会 bind 失败
+# 直接退出，而探活如果打到了那个老进程就会「看起来健康」—— 所以这里显式检查一次。
+health_pid="$(cat "${HEALTH_PID_FILE}" 2>/dev/null || true)"
+sleep 0.5
+if [ -z "${health_pid}" ] || ! kill -0 "${health_pid}" 2>/dev/null; then
+  warn "健康小服务未启动（端口 ${HEALTH_PORT} 被占？）最近日志："
+  tail -3 "${HEALTH_LOG}" >&2 || true
+  die "健康小服务启动失败（${HEALTH_LOG}）：先 bash scripts/stop.sh 清掉占端口的旧进程"
+fi
+
 for _ in $(seq 1 60); do
   if ! kill -0 "${pid}" 2>/dev/null; then
     rm -f "${PID_FILE}"

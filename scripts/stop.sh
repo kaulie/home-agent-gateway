@@ -43,7 +43,23 @@ stop_pid_file() {
 stop_pid_file "${HEALTH_PID_FILE}" "健康小服务"
 stop_pid_file "${PID_FILE}" "Mac Edge"
 
-# 兜底：pid 文件丢失时按命令行精确清理（只认 mac_edge / mac_voice，不误伤别的进程）
+# 兜底 1：健康小服务按端口识别（pid 文件丢了/被覆盖时它会让新进程 bind 失败静默退出，实测过）
+HEALTH_PORT="${MAC_EDGE_HEALTH_PORT:-${SERVICE_PORT:-9528}}"
+if command -v lsof >/dev/null 2>&1; then
+  for cand in $(lsof -nP -iTCP:"${HEALTH_PORT}" -sTCP:LISTEN -t 2>/dev/null || true); do
+    cmd="$(ps -o command= -p "${cand}" 2>/dev/null || true)"
+    case "${cmd}" in
+      *health_server.py*)
+        log "兜底：端口 ${HEALTH_PORT} 上的 pid=${cand} 是本服务的健康小服务，TERM →"
+        kill "${cand}" 2>/dev/null || true
+        sleep 1
+        kill -9 "${cand}" 2>/dev/null || true
+        ;;
+    esac
+  done
+fi
+
+# 兜底 2：pid 文件丢失时按命令行精确清理（只认 mac_edge / mac_voice，不误伤别的进程）
 for pat in '[P]ython -m mac_edge' '[P]ython -m mac_voice'; do
   pids="$(pgrep -f "${pat}" 2>/dev/null || true)"
   if [ -n "${pids}" ]; then
@@ -56,4 +72,5 @@ for pat in '[P]ython -m mac_edge' '[P]ython -m mac_voice'; do
   fi
 done
 
+rm -f "${HEALTH_PID_FILE}"
 log "已停止"
