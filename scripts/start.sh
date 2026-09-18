@@ -18,7 +18,6 @@ set -euo pipefail
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # runtime 目录以脚本自身位置为准（不认继承来的 RUNTIME_DIR，可能是别的服务）
 SELF_RUNTIME_DIR="$(cd "${DIR}/.." && pwd)"
-HEALTH_PORT="${MAC_EDGE_HEALTH_PORT:-${SERVICE_PORT:-${PORT:-9528}}}"
 APP_VERSION="${APP_VERSION:-dev}"
 
 log() { echo "[start] $*"; }
@@ -64,6 +63,19 @@ fi
 chmod 600 "${ENV_FILE}" 2>/dev/null || true
 if [ ! -e "${ENV_FILE_LEGACY}" ]; then
   ln -sfn "${ENV_FILE}" "${ENV_FILE_LEGACY}"
+fi
+
+# 健康检查口（= 平台契约里的 port/healthUrl 端口）。解析顺序：
+#   1) shell 里显式 MAC_EDGE_HEALTH_PORT
+#   2) backend/.env 里的 MAC_EDGE_HEALTH_PORT（部署配置，跟数据/密钥放一起）
+#   3) 平台注入的 SERVICE_PORT（正式字段名）
+#   4) 默认 9528
+# **刻意不看继承来的 PORT**：交互式 shell 里常残留别的服务的 PORT（实测 web-cursor 4211），
+# 照它走会在 127.0.0.1:4211 上和 web-cursor 抢位置 —— 那是别的服务的健康口。
+_ENV_PORT="$(awk -F= '/^[[:space:]]*MAC_EDGE_HEALTH_PORT[[:space:]]*=/{gsub(/[[:space:]"]/,"",$2); v=$2} END{print v}' "${ENV_FILE}" 2>/dev/null || true)"
+HEALTH_PORT="${MAC_EDGE_HEALTH_PORT:-${_ENV_PORT:-${SERVICE_PORT:-9528}}}"
+if [ -n "${PORT:-}" ] && [ "${PORT}" != "${HEALTH_PORT}" ]; then
+  warn "忽略继承来的 PORT=${PORT}（那是别的服务的），健康口用 ${HEALTH_PORT}"
 fi
 
 mkdir -p "${DATA_DIR}" "${BACKEND_DIR}"
