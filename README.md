@@ -70,7 +70,25 @@ MAC_EDGE_HEALTH_PORT=9528
 - `mac/run_mac_edge.sh`：`MAC_EDGE_*` 默认值改成「已设置的 env 优先」（`${X:-默认}`），
   以便 runtime 目录用 `backend/` 布局启动；本地默认行为不变
 - `mac/src/mac_edge/config.py`：`.env` 额外从 `<repo>/backend/.env` 加载（平台保留位，优先于 `mac/.env`）
-- `.gitignore`：补 `outputs/`、`backend/`、平台写入的版本文件
+- `.gitignore`：补 `outputs/`、`backend/`、平台写入的版本文件、`mac/{.venv,data,logs}`、`mac/src/data/`
+- 清理上游误提交的本地库：`mac/src/data/{ncm_songs.sqlite3,ncm_songs.sqlite3-shm,ncm_songs.sqlite3-wal}`
+  从 git 移除（SQLite 的 WAL/SHM 不该进仓，且每次跑测试都会脏工作树）；运行期按
+  `MAC_EDGE_DATA_DIR`（默认 `mac/data`）生成，不依赖仓里的那份
+
+## 随拆分一并搬入的上游同源文件（路径被代码写死）
+
+`mac_edge` 有几处路径是**相对仓库根**写死的（`parents[N]`）。为保持「纯搬迁、零行为变化」，
+这些上游文件也搬进了本仓：
+
+| 路径 | 谁在用 | 说明 |
+|------|--------|------|
+| `server/mdns_service.py` | `mac_edge/agent.py`（`parents[3]/"server"`，按文件路径加载） | brain / edge 共用的 mDNS 发布器（纯标准库 + 可选 zeroconf）。brain 仓里也是同一份，两边同源 |
+| `games/coin-catcher/**` | `mac_edge/plugins/game_host.py`（`parents[4]/"games"`） | `mac.game.host` 在电视上跑的小游戏。**`dist/` 是 vite 构建产物**（上游 .gitignore 忽略），部署时要 `npm ci && npm run build` 或从旧 checkout 拷一份 `dist/` |
+| `plugins/voice-lamp-test/profiles/default.yaml` | `mac_edge/plugins/voice_test/profile.py`（`parents[5]/"plugins"`） | 语音台灯测试档位 |
+| `plugins/livingroom-ceiling-light/audio/**` | `mac_edge/plugins/livingroom_light.py`（`parents[4]/"plugins"`） | 客厅顶灯开 / 关 / 唤醒提示音 |
+
+`<repo>/data`、`<repo>/mac/data` 这类**数据**路径不在上面：运行期一律由 `MAC_EDGE_DATA_DIR`
+指定（runtime 里 = `<runtime>/backend/data`），代码里的相对路径只是兜底默认值。
 
 ## 边界
 
