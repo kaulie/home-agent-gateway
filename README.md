@@ -74,6 +74,9 @@ MAC_EDGE_HEALTH_PORT=9528
 - 日志：`MAC_EDGE_LOG_DIR` > `<数据目录>/logs`（`start.sh` 解析/ mkdir：不设时日志**跟随数据目录**，不再落代码目录）
 - 都不设时行为与上游一致（库和数据都在 `mac/data`），本地开发零影响
 
+**日志不进仓库**：日志/落地 stdout 属运行期数据 —— 仓库 `.gitignore` 忽略 `logs/`、`**/logs/`、`*.log`、`*.out`（`mac/logs/` 也在内），`build.sh` 也不把它们打进发版包。
+运行期日志的三处落点：`<MAC_EDGE_LOG_DIR>`（生产 = `~/artifact-storage/home-agent-gateway/logs`）、`<runtime>/backend/server.log`（进程 stdout，平台部署保留清单里的那一个）、以及平台侧不落盘的探活。
+
 ## 相对上游的改动（拆分时）
 
 - 新增 `build.sh`、`scripts/{start,stop,restart}.sh`、`scripts/health_server.py`（部署系统要求 + 健康口）

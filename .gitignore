@@ -229,5 +229,13 @@ mac/.venv/
 mac/data/
 mac/logs/
 
+# 日志属于**运行期数据**，不进仓库管理（生产在 MAC_EDGE_LOG_DIR：
+# ~/artifact-storage/home-agent-gateway/logs；本地开发在 mac/logs）。
+# 这里再兜一层：任何位置的日志 / stdout 落地文件都不入库、也不进发版包。
+logs/
+**/logs/
+*.log
+*.out
+
 # 上游误提交的本地 ncm 歌库（运行期按 MAC_EDGE_DATA_DIR 生成/使用）
 mac/src/data/
