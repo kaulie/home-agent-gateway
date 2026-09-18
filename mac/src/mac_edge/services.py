@@ -370,6 +370,28 @@ XIAODU_SPEAKER_SERVICE: dict[str, Any] = {
             },
             output_schema={},
         ),
+        attach(
+            "xiaodu.play",
+            input_schema={
+                "asset_ref": {
+                    "type": "string",
+                    "required": True,
+                    "description": 'AssetRef JSON {asset_id, type: "audio", mime_type?}。禁止 path / 永久 URL。常为 $asset_ref。',
+                },
+            },
+            output_schema={
+                "status_text": {
+                    "type": "string",
+                    "required": True,
+                    "description": "中文一句话，如「已在小度音箱播放最新音频」",
+                },
+                "asset_id": {
+                    "type": "string",
+                    "required": False,
+                    "description": "实际播放的 audio asset_id",
+                },
+            },
+        ),
     ],
 }
 

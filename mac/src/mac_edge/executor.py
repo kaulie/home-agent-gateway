@@ -100,7 +100,11 @@ from mac_edge.plugins.xiaomi_lock import (
 )
 from mac_edge.plugins.livingroom_light import LivingRoomLightError, set_from_params
 from mac_edge.plugins.notify_speak import NotifySpeakError, prefetch_from_params, speak_from_params
-from mac_edge.plugins.xiaodu_speaker import XiaoduSpeakerError, speak_from_params as xiaodu_speak_from_params
+from mac_edge.plugins.xiaodu_speaker import (
+    XiaoduSpeakerError,
+    play_from_params as xiaodu_play_from_params,
+    speak_from_params as xiaodu_speak_from_params,
+)
 from mac_edge.plugins.tv_game import GameLaunchError, launch_from_params
 from mac_edge.plugins.voice_test.trial import VoiceTestError, run_trial_from_params
 from mac_edge.plugins.query_content import QueryContentError, query_from_params
@@ -1661,6 +1665,14 @@ def _execute_capability(
             msg, outputs = web_scraper_from_params(params, asset=asset)
             return True, msg, outputs
         except (WebScraperError, AssetError) as e:
+            return False, str(e), {}
+        except Exception as e:
+            return False, f"{type(e).__name__}: {e}", {}
+    if cap == "xiaodu.play":
+        try:
+            msg, outputs = xiaodu_play_from_params(params, asset=asset)
+            return True, msg, outputs
+        except (XiaoduSpeakerError, AssetError) as e:
             return False, str(e), {}
         except Exception as e:
             return False, f"{type(e).__name__}: {e}", {}

@@ -517,3 +517,69 @@ def speak_from_params(params: dict[str, Any]) -> str:
     text = str(params.get("text") or "").strip()
     voice = str(params.get("voice") or "").strip() or None
     return speak(text, voice=voice)
+
+
+# ---------------------------------------------------------------------------
+# xiaodu.play：把一段**已有 audio 素材**交给小度播放（DLNA），不做 TTS
+#
+# 与 xiaodu.speak 的分工：speak = 念一段文案（先生成 edge-tts 再播）；
+# play = 播放一段现成音频（如论文听读产出的 mp3），URL 由 Asset Manager 给（Brain /content，
+# 小度能拉的 LAN 地址 + 本 intent 授权）。地址探测/自愈逻辑与 speak 同策略。
+# ---------------------------------------------------------------------------
+
+
+def play_url(url: str, *, device: XiaoduDevice | None = None) -> str:
+    """把 http(s) 音频地址交给小度播放；失败按「丢缓存重新探测再试一次」自愈。"""
+    uri = (url or "").strip()
+    if not uri:
+        raise XiaoduSpeakerError("xiaodu.play 需要音频地址")
+    if not (uri.startswith("http://") or uri.startswith("https://")):
+        raise XiaoduSpeakerError("xiaodu.play 的音频地址必须是 http(s)")
+
+    dev = device or resolve_device()
+    try:
+        play_device(dev, uri)
+    except XiaoduSpeakerError as e:
+        if dev.source == "override":
+            raise
+        log.warning("xiaodu 播放失败（%s）—— 重新探测后重试：%s", dev.source, e)
+        lan.drop_cache(_cache_path())
+        dev = resolve_device(use_cache=False)
+        play_device(dev, uri)
+        log.info("xiaodu 重新探测后播放成功 device=%s", dev.describe())
+    log.info("xiaodu.play uri=%s device=%s", uri, dev.describe())
+    return f"xiaodu playing on {dev.describe()}"
+
+
+def play_from_params(
+    params: dict[str, Any],
+    *,
+    asset: Any,
+    **_kwargs: Any,
+) -> tuple[str, dict[str, Any]]:
+    """xiaodu.play 入口：asset_ref（audio）→ 小度 DLNA 播放。"""
+    from mac_edge.asset.types import AssetError
+
+    # 鸭子类型检查（与 display.audio / pdf_display 同口径）：真机无差别，单测可用最小替身
+    if asset is None or not (
+        hasattr(asset, "require_ref") and hasattr(asset, "http_url")
+    ):
+        raise XiaoduSpeakerError("xiaodu.play 需要 CapAsset（Runtime SDK）")
+    try:
+        ref = asset.require_ref(params, "asset_ref")
+        url = asset.http_url(ref)
+    except AssetError as e:
+        raise XiaoduSpeakerError(str(e)) from e
+    asset_type = str(getattr(ref, "type", "") or "").strip().lower()
+    if asset_type and asset_type != "audio":
+        raise XiaoduSpeakerError(f"xiaodu.play 需要 audio Asset，当前是 {asset_type}")
+    mime = str(getattr(ref, "mime_type", "") or "").strip().lower()
+    if mime and not mime.startswith("audio/"):
+        raise XiaoduSpeakerError(f"xiaodu.play 需要音频 mime，当前是 {mime}")
+
+    msg = play_url(url)
+    asset_id = getattr(ref, "asset_id", None)
+    return msg, {
+        "status_text": "已在小度音箱播放最新音频",
+        "asset_id": str(asset_id) if asset_id else "",
+    }
