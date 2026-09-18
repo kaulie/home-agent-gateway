@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mac-edge"
+version = "0.3.0"
+description = "Living-room Mac Edge: register, heartbeat, pull intents; Cast via external HTTP"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+  "httpx>=0.27.0,<1",
+  "volcengine-python-sdk[ark]>=1.0.0",
+  "cryptography>=42.0.0",
+  "aiohttp>=3.9.0,<4",
+  "sounddevice>=0.4.6",
+  "numpy>=1.24.0",
+  "pypdf>=4.0,<7",
+  "pymupdf>=1.24,<2",
+  "weasyprint>=65,<71",
+]
+
+[project.scripts]
+mac-edge = "mac_edge.__main__:main"
+mac-voice = "mac_voice.transcribe:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
