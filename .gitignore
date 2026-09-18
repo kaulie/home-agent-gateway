@@ -216,3 +216,15 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# 部署系统（agent-control-plane-deployment）在 runtime 目录里的产物
+outputs/
+backend/
+VERSION
+COMMIT
+DEPLOYMENT
+GIT_REPO_URL
+# Edge 运行期数据（data/ 与 logs/ 在 runtime 里位于 backend/，本地开发在 mac/ 下）
+mac/.venv/
+mac/data/
+mac/logs/
