@@ -22,6 +22,7 @@ from xml.sax.saxutils import escape as xml_escape
 
 import httpx
 
+from mac_edge.plugins import av_transport as av
 from mac_edge.plugins import lan_discovery as lan
 from mac_edge.plugins.chromecast_display import (
     DEFAULT_SLIDESHOW_INTERVAL_SEC,
@@ -583,6 +584,53 @@ def _require_cap_asset(asset: Any) -> None:
         hasattr(asset, "require_ref") and hasattr(asset, "http_url")
     ):
         raise XiaomiTvError("display.audio 需要 CapAsset（Runtime SDK）")
+
+
+def control_audio(
+    action: str,
+    *,
+    renderer: dict[str, str] | None = None,
+    timeout_sec: float = 10.0,
+    post_fn: Callable[[str, str, dict[str, str]], int] | None = None,
+    discover_fn: Callable[[], dict[str, str]] | None = None,
+) -> str:
+    """暂停 / 继续 / 停止电视**当前正在播的音频**（DLNA AVTransport）。"""
+    try:
+        act = av.parse_action(action)
+    except av.TransportActionError as e:
+        raise XiaomiTvError(str(e)) from e
+    target = renderer or (discover_fn or discover_renderer)()
+    control = target["control_url"]
+    body = {
+        av.ACTION_PAUSE: ("Pause", "<InstanceID>0</InstanceID>"),
+        av.ACTION_RESUME: ("Play", "<InstanceID>0</InstanceID><Speed>1</Speed>"),
+        av.ACTION_STOP: ("Stop", "<InstanceID>0</InstanceID>"),
+    }[act]
+    soap_action(
+        control, body[0], body[1], timeout_sec=timeout_sec, post_fn=post_fn
+    )
+    name = target.get("friendly_name") or "xiaomi-tv"
+    return f"dlna {act} ok → {name}"
+
+
+def audio_control_from_params(params: dict[str, str], **_kwargs: Any) -> tuple[str, dict[str, Any]]:
+    """display.audio.control 入口：action=pause/resume/stop（或中文）→ status_text。"""
+    try:
+        act = av.parse_action(params.get("action"))
+    except av.TransportActionError as e:
+        raise XiaomiTvError(str(e)) from e
+    try:
+        control_audio(params.get("action"))
+    except XiaomiTvError as e:
+        # DLNA 701 = 没在播：暂停/停止一个空闲电视不是错误
+        if act in (av.ACTION_PAUSE, av.ACTION_STOP) and (
+            "701" in str(e) or "Transport is not" in str(e)
+        ):
+            text = f"小米电视当前没有在播放（{av.label_for(act)}）"
+            return text, {"status_text": text}
+        raise
+    text = f"小米电视{av.label_for(act)}"
+    return text, {"status_text": text}
 
 
 def audio_from_params(
