@@ -9,7 +9,7 @@ from typing import Any
 
 from mac_edge.brain_client import BrainError, format_intent_summary
 from mac_edge.multi_brain import MultiBrainClient, remember_intent_origin
-from mac_edge.config import Config
+from mac_edge.config import Config, mac_root as _mac_root_dir
 from mac_edge.delivery import run_pending_deliveries
 from mac_edge.executor import (
     DEADLINE_SLEEP_MIN_SEC,
@@ -103,7 +103,8 @@ class EdgeAgent:
         # Cached edge_id from another Brain would 401 until re-register.
         self._heartbeat_ok_edge_id: str | None = None
         self._voice = VoiceSupervisor(
-            mac_root=config.data_dir.parent,
+            # 代码目录（不是「数据目录的父目录」—— 部署时数据目录在代码之外）
+            mac_root=_mac_root_dir(),
             edge_id_path=config.edge_id_path,
             brain_url=config.brain_base_url,
             client_hint=config.identity.client_hint,

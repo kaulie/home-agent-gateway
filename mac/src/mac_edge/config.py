@@ -23,6 +23,20 @@ def _project_root() -> Path:
     return Path(__file__).resolve().parents[2]
 
 
+def mac_root() -> Path:
+    """`mac/` 代码目录（`src/`、`.venv/`、`logs/` 的父目录）。
+
+    上游按「数据目录的父目录」推（数据目录默认就是 `mac/data`）；部署时数据目录被指到代码
+    之外（如 runtime 的 `<runtime>/backend/data`）就会推错 —— 子进程 `mac_voice` 拿到的
+    `PYTHONPATH` 指向不存在的地方，直接 `No module named mac_voice`。所以按**代码位置**定位，
+    并用 `MAC_EDGE_MAC_ROOT` 兜底覆盖。
+    """
+    override = (os.environ.get("MAC_EDGE_MAC_ROOT") or "").strip()
+    if override:
+        return Path(override).expanduser()
+    return Path(__file__).resolve().parents[2]
+
+
 def colocated_lan_brain_url(url: str) -> str:
     """Same-machine LAN Brain: HTTP uses loopback, never a `.local` hostname."""
     text = (url or "").strip().rstrip("/")
