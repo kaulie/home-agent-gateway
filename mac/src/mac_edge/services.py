@@ -367,7 +367,7 @@ LOCAL_PRINTER_SERVICE: dict[str, Any] = {
 
 XIAODU_SPEAKER_SERVICE: dict[str, Any] = {
     "service_id": "xiaodu.speaker",
-    "display_name": "小度音箱",
+    "display_name": "小度音箱播报",
     "version": "0.1.0",
     "group": "notify",
     "capabilities": [
@@ -387,6 +387,15 @@ XIAODU_SPEAKER_SERVICE: dict[str, Any] = {
             },
             output_schema={},
         ),
+    ],
+}
+
+XIAODU_PLAY_SERVICE: dict[str, Any] = {
+    "service_id": "xiaodu.play",
+    "display_name": "小度音箱播放",
+    "version": "0.1.0",
+    "group": "notify",
+    "capabilities": [
         attach(
             "xiaodu.play",
             input_schema={
@@ -2313,6 +2322,7 @@ _LAPTOP_SERVICE_ORDER = (
     LOCAL_NOTIFY_SERVICE,
     LOCAL_PRINTER_SERVICE,
     XIAODU_SPEAKER_SERVICE,
+    XIAODU_PLAY_SERVICE,
     NETEASE_MUSIC_SERVICE,
     MUSIC_RECOGNIZE_SERVICE,
     LOCAL_VISION_SERVICE,
@@ -2449,6 +2459,14 @@ def default_services() -> list[dict[str, Any]]:
             log.info("advertise xiaodu.speaker (SSDP 探测到 / 有缓存 / MAC_EDGE_XIAODU_IP)")
         else:
             log.info("skip xiaodu.speaker — 没探测到小度，也没配 MAC_EDGE_XIAODU_IP")
+    if _allow_service(XIAODU_PLAY_SERVICE["service_id"], allowed_set):
+        from mac_edge.plugins.xiaodu_speaker import xiaodu_configured
+
+        if xiaodu_configured():
+            services.append(dict(XIAODU_PLAY_SERVICE))
+            log.info("advertise xiaodu.play (SSDP 探测到 / 有缓存 / MAC_EDGE_XIAODU_IP)")
+        else:
+            log.info("skip xiaodu.play — 没探测到小度，也没配 MAC_EDGE_XIAODU_IP")
     if _allow_service(NETEASE_MUSIC_SERVICE["service_id"], allowed_set):
         from mac_edge.plugins.netease_music import ncm_cli_configured
 

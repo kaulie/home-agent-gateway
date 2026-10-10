@@ -133,7 +133,7 @@ class XiaoduSpeakerTests(unittest.TestCase):
             xs.play_from_params({}, asset=asset)
 
     def test_advertises_xiaodu_play(self) -> None:
-        """xiaodu.speaker 服务同时广告 xiaodu.speak 与 xiaodu.play。"""
+        """xiaodu.play 与 xiaodu.speaker 是两个独立服务。"""
         from mac_edge.services import default_services
 
         env = {"MAC_EDGE_ROLE": "laptop", "MAC_EDGE_SERVICE_WHITELIST": ""}
@@ -142,13 +142,31 @@ class XiaoduSpeakerTests(unittest.TestCase):
                 with mock.patch(
                     "mac_edge.services.xiaodu_configured", return_value=True, create=True
                 ):
+                    services = default_services()
+                    by_id = {
+                        str(s.get("service_id") or ""): s for s in services
+                    }
                     ids = {
                         str(c["capability_id"])
-                        for s in default_services()
+                        for s in services
                         for c in (s.get("capabilities") or [])
                     }
         self.assertIn("xiaodu.speak", ids)
         self.assertIn("xiaodu.play", ids)
+        self.assertIn("xiaodu.speaker", by_id)
+        self.assertIn("xiaodu.play", by_id)
+        speaker_caps = {
+            str(c["capability_id"])
+            for c in (by_id["xiaodu.speaker"].get("capabilities") or [])
+        }
+        play_caps = {
+            str(c["capability_id"])
+            for c in (by_id["xiaodu.play"].get("capabilities") or [])
+        }
+        self.assertEqual(speaker_caps, {"xiaodu.speak"})
+        self.assertIn("xiaodu.play", play_caps)
+        self.assertNotIn("xiaodu.play", speaker_caps)
+        self.assertNotIn("xiaodu.speak", play_caps)
 
     def test_speak_from_params_requires_text(self) -> None:
         with self.assertRaises(xs.XiaoduSpeakerError) as ctx:
@@ -497,7 +515,7 @@ class TransportControlTests(unittest.TestCase):
             for s in services
             for c in (s.get("capabilities") or [])
         }
-        self.assertEqual(caps.get("xiaodu.control"), "xiaodu.speaker")
+        self.assertEqual(caps.get("xiaodu.control"), "xiaodu.play")
         self.assertEqual(caps.get("display.audio.control"), "xiaomi.tv.display")
 
 
