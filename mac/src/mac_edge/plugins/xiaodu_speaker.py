@@ -5,6 +5,8 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import shutil
+import subprocess
 import threading
 import time
 import urllib.error
@@ -23,6 +25,8 @@ log = logging.getLogger("mac_edge.xiaodu_speaker")
 
 DEFAULT_HTTP_PORT = 8000
 DEFAULT_VOICE = "zh-CN-XiaoxiaoNeural"
+LIVE_FILENAME = "ncm-live.mp3"
+DEFAULT_LIVE_INPUT = "none:BlackHole 2ch"
 UPNP_CONTROL_PATH = "/upnp/control/rendertransport1"
 UPNP_PORT = 49494
 UPNP_TIMEOUT_SEC = 8.0
@@ -382,6 +386,182 @@ def play_device(device: XiaoduDevice, uri: str) -> None:
     play_uri(device.ip, uri, control_url=device.control_url)
 
 
+def _xml_escape(text: str) -> str:
+    return (
+        str(text or "")
+        .replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+        .replace('"', "&quot;")
+    )
+
+
+def _audio_didl(uri: str, *, title: str = "", mime_type: str = "audio/mpeg") -> str:
+    kind = (mime_type or "").strip() or "audio/mpeg"
+    name = _xml_escape(title or "网易云")
+    safe_uri = _xml_escape(uri)
+    return (
+        '<DIDL-Lite xmlns="urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/" '
+        'xmlns:dc="http://purl.org/dc/elements/1.1/" '
+        'xmlns:upnp="urn:schemas-upnp-org:metadata-1-0/upnp/">'
+        '<item id="0" parentID="-1" restricted="1">'
+        f"<dc:title>{name}</dc:title>"
+        "<upnp:class>object.item.audioItem.musicTrack</upnp:class>"
+        f'<res protocolInfo="http-get:*:{kind}:*">{safe_uri}</res>'
+        "</item></DIDL-Lite>"
+    )
+
+
+def _set_audio_uri_xml(uri: str, metadata: str) -> str:
+    return (
+        '<?xml version="1.0"?>'
+        '<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" '
+        's:encodingStyle="http://schemas.xmlsoap.org/soap/encoding">'
+        "<s:Body>"
+        '<u:SetAVTransportURI xmlns:u="urn:schemas-upnp-org:service:AVTransport:1">'
+        "<InstanceID>0</InstanceID>"
+        f"<CurrentURI>{_xml_escape(uri)}</CurrentURI>"
+        f"<CurrentURIMetaData>{_xml_escape(metadata)}</CurrentURIMetaData>"
+        "</u:SetAVTransportURI>"
+        "</s:Body></s:Envelope>"
+    )
+
+
+def play_audio_device(
+    device: XiaoduDevice,
+    uri: str,
+    *,
+    title: str = "",
+    mime_type: str = "audio/mpeg",
+) -> None:
+    """把音频 URI 交给小度（DIDL musicTrack，区别于 TTS 空 metadata）。"""
+    didl = _audio_didl(uri, title=title, mime_type=mime_type)
+    _try_upnp_stop(device)
+    _post(
+        device,
+        "urn:schemas-upnp-org:service:AVTransport:1#SetAVTransportURI",
+        _set_audio_uri_xml(uri, didl),
+    )
+    _post(device, "urn:schemas-upnp-org:service:AVTransport:1#Play", _PLAY_XML)
+
+
+def _ffmpeg_bin() -> str | None:
+    override = (os.environ.get("MAC_EDGE_FFMPEG") or os.environ.get("FFMPEG") or "").strip()
+    if override:
+        path = Path(override).expanduser()
+        if path.is_file():
+            return str(path)
+        found = shutil.which(override)
+        if found:
+            return found
+    return shutil.which("ffmpeg")
+
+
+def _live_input() -> str:
+    return (os.environ.get("MAC_EDGE_NCM_RECORD_INPUT") or "").strip() or DEFAULT_LIVE_INPUT
+
+
+def play_audio_file(
+    path: str | Path,
+    *,
+    title: str = "",
+    mime_type: str = "audio/mpeg",
+) -> str:
+    """把本地音频文件拷到供流目录，经 UPnP 交给小度。"""
+    src = Path(path)
+    if not src.is_file() or src.stat().st_size < 64:
+        raise XiaoduSpeakerError("没有可播放的音频文件")
+    device = resolve_device()
+    server = get_server()
+    ext = src.suffix.lower() if src.suffix else ".mp3"
+    if ext not in (".mp3", ".m4a", ".aac", ".wav", ".ogg"):
+        ext = ".mp3"
+    fname = f"music_{int(time.time())}{ext}"
+    dest = server.serve_dir / fname
+    shutil.copy2(src, dest)
+    uri = server.public_url(fname, host=public_host(device.ip))
+    log.info("xiaodu audio file uri=%s device=%s title=%r", uri, device.describe(), title)
+    play_audio_device(device, uri, title=title or src.stem, mime_type=mime_type)
+    return f"xiaodu playing: {title or src.name}"
+
+
+def play_audio_url(url: str, *, title: str = "", mime_type: str = "audio/mpeg") -> str:
+    """把远端 http(s) 音频地址交给小度拉流。"""
+    uri = str(url or "").strip()
+    if not uri.startswith(("http://", "https://")):
+        raise XiaoduSpeakerError("小度播放地址必须是 http(s)")
+    device = resolve_device()
+    log.info("xiaodu audio url=%s device=%s title=%r", uri, device.describe(), title)
+    play_audio_device(device, uri, title=title or "网易云", mime_type=mime_type)
+    return f"xiaodu playing: {title or uri}"
+
+
+def play_live_capture(*, title: str = "") -> str:
+    """让小度拉本机 BlackHole 实时 MP3 流（网易云在 Mac 出声时用）。"""
+    if not _ffmpeg_bin():
+        raise XiaoduSpeakerError("无法给小度推流：本机找不到 ffmpeg")
+    device = resolve_device()
+    server = get_server()
+    uri = server.public_url(LIVE_FILENAME, host=public_host(device.ip))
+    log.info("xiaodu live uri=%s device=%s title=%r", uri, device.describe(), title)
+    play_audio_device(device, uri, title=title or "网易云", mime_type="audio/mpeg")
+    return f"xiaodu live: {title or '网易云'}"
+
+
+def _stream_live_mp3(handler: BaseHTTPRequestHandler) -> None:
+    """Push BlackHole capture as a chunked MP3 HTTP body (no Content-Length)."""
+    bin_path = _ffmpeg_bin()
+    if not bin_path:
+        handler.send_error(503, "ffmpeg not found")
+        return
+    argv = [
+        bin_path,
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-f",
+        "avfoundation",
+        "-i",
+        _live_input(),
+        "-c:a",
+        "libmp3lame",
+        "-b:a",
+        "192k",
+        "-f",
+        "mp3",
+        "pipe:1",
+    ]
+    try:
+        proc = subprocess.Popen(
+            argv,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            stdin=subprocess.DEVNULL,
+        )
+    except OSError:
+        handler.send_error(503, "ffmpeg failed")
+        return
+    handler.send_response(200)
+    handler.send_header("Content-Type", "audio/mpeg")
+    handler.send_header("Connection", "close")
+    handler.end_headers()
+    try:
+        assert proc.stdout is not None
+        while True:
+            chunk = proc.stdout.read(4096)
+            if not chunk:
+                break
+            handler.wfile.write(chunk)
+    except (BrokenPipeError, ConnectionResetError, OSError):
+        pass
+    finally:
+        proc.kill()
+        try:
+            proc.wait(timeout=2)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+
+
 class _TtsFileHandler(BaseHTTPRequestHandler):
     serve_dir: Path
 
@@ -390,6 +570,9 @@ class _TtsFileHandler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:
         name = (self.path or "/").split("?", 1)[0].lstrip("/")
+        if name == LIVE_FILENAME:
+            _stream_live_mp3(self)
+            return
         if not name or ".." in name or "/" in name:
             self.send_error(404)
             return

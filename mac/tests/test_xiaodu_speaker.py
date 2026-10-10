@@ -564,3 +564,37 @@ if __name__ == "__main__":
         self.assertTrue(msg.startswith("xiaodu spoke:"))
         self.assertEqual([ip for ip, _uri in played], ["192.168.3.47", "192.168.3.48"])
         self.assertTrue(all("tts_" in uri for _ip, uri in played))
+
+    def test_play_audio_file_uses_music_didl(self) -> None:
+        src = Path(self._tmp.name) / "十年.mp3"
+        src.write_bytes(b"\xff" * 128)
+        with tempfile.TemporaryDirectory() as tmp:
+            server = xs.XiaoduTtsHttpServer(data_dir=Path(tmp), http_port=0)
+            server.start()
+            xs.bind_server(server)
+            self.addCleanup(server.stop)
+            self.addCleanup(lambda: xs.bind_server(None))
+            bodies: list[str] = []
+
+            def fake_post(
+                du_ip: str,
+                action: str,
+                body: str,
+                *,
+                timeout_sec: float = 8.0,
+            ) -> None:
+                bodies.append(body)
+
+            with mock.patch.dict(
+                os.environ,
+                {"MAC_EDGE_XIAODU_IP": "192.168.3.47", "MAC_EDGE_XIAODU_PUBLIC_HOST": "192.168.3.73"},
+                clear=False,
+            ):
+                with mock.patch.object(xs, "_upnp_post", side_effect=fake_post):
+                    msg = xs.play_audio_file(src, title="十年")
+            self.assertTrue(msg.startswith("xiaodu playing:"))
+            self.assertEqual(len(bodies), 3)
+            self.assertIn("audioItem.musicTrack", bodies[1])
+            self.assertIn("music_", bodies[1])
+            copied = list(server.serve_dir.glob("music_*.mp3"))
+            self.assertEqual(len(copied), 1)
