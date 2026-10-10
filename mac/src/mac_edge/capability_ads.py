@@ -631,9 +631,9 @@ ADS: dict[str, dict[str, Any]] = {
     "xiaodu.play": _ad(
         kind="output",
         role="小度音箱音频播放器",
-        planner_recognize="把本步已有的 audio Asset（如论文听读产出的音频、录音）交给客厅小度音箱放出来。入参 asset_ref（必填，type=audio，常为 $asset_ref）。用户没说是哪份音频时，先排 asset.inventory（type=audio, order=newest_first, index=1）再接本步。本步只放声音，不念文案（那是 xiaodu.speak）、不投屏、不放歌",
-        typical_triggers=["把最新的音频用小度音箱播放", "让小度音箱放这段音频", "小度播放最新的录音", "用客厅音箱放这段音频"],
-        do_not_dispatch=["念一段文案", "投屏", "点歌放歌", "Mac 本机播报", "TTS 生成"],
+        planner_recognize="把一条可拉流的 http(s) 音频 URL 交给客厅小度 DLNA 播放（SetAVTransportURI+Play）。入参 url（直接播）或 song（先解析出音频 URL 再播）或 asset_ref（已有 audio Asset，常为 $asset_ref）。用户说「用小度音箱播放歌曲十年」用本步，不要改派 music.play（那是本机网易云开播）。不念文案（xiaodu.speak）、不投屏",
+        typical_triggers=["用小度音箱播放歌曲十年", "用小度播放", "把最新的音频用小度音箱播放", "让小度音箱放这段音频"],
+        do_not_dispatch=["本机网易云开播", "念一段文案", "投屏", "Mac 本机播报", "TTS 生成"],
     ),
     "xiaodu.control": _ad(
         kind="output",
@@ -652,8 +652,8 @@ ADS: dict[str, dict[str, Any]] = {
     "music.play": _ad(
         kind="action",
         role="音乐播放器",
-        planner_recognize="按歌名/歌手/专辑开始放歌（网易云）。入参 song/artist/album；用户说「用小度音箱放歌」时仍用本步并设 speaker=xiaodu（不要改派 xiaodu.speak）。「xxx的歌」或仅歌手：连播多首（云歌单），不是单曲。不负责连蓝牙音箱，不负责暂停/切歌，不负责下载/缓存索引",
-        typical_triggers=["放一首周杰伦", "播放歌曲", "放歌", "放十年", "来首邓丽君", "用小度音箱播放"],
+        planner_recognize="按歌名/歌手/专辑开始放歌（本机网易云）。入参 song/artist/album。用户说「用小度音箱播放」时不要派本步，改派 xiaodu.play（把音频 URL 交给小度）。「xxx的歌」或仅歌手：连播多首（云歌单），不是单曲。不负责连蓝牙音箱，不负责暂停/切歌，不负责下载/缓存索引",
+        typical_triggers=["放一首周杰伦", "播放歌曲", "放歌", "放十年", "来首邓丽君"],
         do_not_dispatch=["蓝牙连接", "TTS", "开灯", "暂停", "下一首", "下载", "缓存"],
     ),
     "music.cache": _ad(

@@ -751,21 +751,44 @@ def play_url(url: str, *, device: XiaoduDevice | None = None) -> str:
 def play_from_params(
     params: dict[str, Any],
     *,
-    asset: Any,
+    asset: Any = None,
     probe_fn: Any = None,
     **_kwargs: Any,
 ) -> tuple[str, dict[str, Any]]:
-    """xiaodu.play 入口：asset_ref（audio）→ 小度 DLNA 播放。"""
+    """xiaodu.play：url / song / asset_ref → 小度 DLNA 播放。不开本机网易云。"""
     from mac_edge.asset.types import AssetError
+
+    raw = params if isinstance(params, dict) else {}
+    url = str(raw.get("url") or "").strip()
+    song = str(raw.get("song") or "").strip()
+    artist = str(raw.get("artist") or "").strip()
+    if url:
+        if not url.startswith(("http://", "https://")):
+            raise XiaoduSpeakerError("xiaodu.play 的音频地址必须是 http(s)")
+        msg = play_audio_url(url, title=song)
+        return msg, {"status_text": f"已在小度音箱播放{song or '音频'}"}
+    if song:
+        from mac_edge.plugins import netease_music as nm
+
+        try:
+            resolved, title = nm.resolve_playable_http_url(
+                song=song,
+                artist=artist,
+                user_input=str(raw.get("user_input") or "").strip() or None,
+            )
+        except nm.NeteaseMusicError as e:
+            raise XiaoduSpeakerError(str(e)) from e
+        msg = play_audio_url(resolved, title=title)
+        return msg, {"status_text": f"已在小度音箱播放{title}", "song": title}
 
     # 鸭子类型检查（与 display.audio / pdf_display 同口径）：真机无差别，单测可用最小替身
     if asset is None or not (
         hasattr(asset, "require_ref") and hasattr(asset, "http_url")
     ):
-        raise XiaoduSpeakerError("xiaodu.play 需要 CapAsset（Runtime SDK）")
+        raise XiaoduSpeakerError("xiaodu.play 需要 url、song 或 audio Asset")
     try:
         ref = asset.require_ref(params, "asset_ref")
-        url = asset.http_url(ref)
+        asset_url = asset.http_url(ref)
     except AssetError as e:
         raise XiaoduSpeakerError(str(e)) from e
     asset_type = str(getattr(ref, "type", "") or "").strip().lower()
@@ -778,11 +801,11 @@ def play_from_params(
     # 播放前预检：小度是「盲拉」字节，取不到时 Play 也会返回 200（见 plugins/media_url.py）
     probe = probe_fn or media_url.verify_media_url
     try:
-        probe(url, what="音频")
+        probe(asset_url, what="音频")
     except media_url.MediaUrlError as e:
         raise XiaoduSpeakerError(str(e)) from e
 
-    msg = play_url(url)
+    msg = play_url(asset_url)
     asset_id = getattr(ref, "asset_id", None)
     return msg, {
         "status_text": "已在小度音箱播放最新音频",

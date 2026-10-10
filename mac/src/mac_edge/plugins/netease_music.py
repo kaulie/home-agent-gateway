@@ -1392,6 +1392,31 @@ def _http_url_from_obj(obj: dict[str, Any] | None) -> str | None:
     return None
 
 
+def resolve_playable_http_url(
+    *,
+    song: str,
+    artist: str = "",
+    user_input: str | None = None,
+) -> tuple[str, str]:
+    """Search/cache only — return (url, title). Does not start the NetEase app."""
+    title = str(song or "").strip()
+    who = str(artist or "").strip()
+    if not title and not who:
+        raise NeteaseMusicError("小度放歌需要歌名或音频地址")
+    cached = _cached_record(song=title, artist=who)
+    record = cached or search_record(
+        song=title or who,
+        artist=who or None,
+        user_input=user_input,
+    )
+    url = fetch_song_http_url(record)
+    if not url:
+        raise NeteaseMusicError(
+            f"没有可给小度拉流的音频地址：{_record_name(record) or title or who}"
+        )
+    return url, _record_name(record) or title or who
+
+
 def fetch_song_http_url(record: dict[str, Any]) -> str | None:
     """Best-effort song CDN URL: record fields, then ncm-cli url / song url."""
     found = _http_url_from_obj(record)
@@ -1451,7 +1476,7 @@ def route_to_xiaodu(record: dict[str, Any] | None) -> str:
         url = fetch_song_http_url(record)
         if url:
             return xs.play_audio_url(url, title=title)
-    return xs.play_live_capture(title=title or "网易云")
+    raise NeteaseMusicError(f"没有可给小度拉流的音频地址：{title or '歌曲'}")
 
 
 def _finish_with_xiaodu(
@@ -1549,7 +1574,10 @@ def play_from_params(params: dict[str, Any] | None = None) -> tuple[str, dict[st
         search_ms = int(round((time.perf_counter() - t_search) * 1000))
         cache_label = "miss"
     t_play = time.perf_counter()
-    if artist_queue:
+    if wants_xiaodu(params):
+        msg = route_to_xiaodu(record)
+        queue_added = 0
+    elif artist_queue:
         msg, queue_added = play_artist_queue(queue_records)
     else:
         msg = play_record(record)
@@ -1591,6 +1619,10 @@ def play_from_params(params: dict[str, Any] | None = None) -> tuple[str, dict[st
         cache_label,
         f" queue={len(queue_records)}" if artist_queue else "",
     )
+    if wants_xiaodu(params):
+        out = dict(outputs)
+        out["xiaodu"] = {"played": True, "msg": msg}
+        return msg, out
     return _finish_with_xiaodu(msg, outputs, params, record=record)
 
 
