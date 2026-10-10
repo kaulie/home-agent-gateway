@@ -108,6 +108,9 @@ def _playlist_play_response(cmd: list[str]) -> subprocess.CompletedProcess[str] 
         return _completed(PLAYLIST_ADD_OK_JSON)
     if action == "play" and "--playlist" in cmd:
         return _completed(PLAY_PLAYLIST_ORPHEUS)
+    if action == "play" and "--song" in cmd:
+        # orpheus-only playlist is followed by play --song on the first track
+        return _completed(PLAY_STDOUT)
     return None
 
 
@@ -251,6 +254,7 @@ class NeteaseMusicTests(unittest.TestCase):
         self.assertIn("playlist_create", actions)
         self.assertIn("playlist_add", actions)
         self.assertTrue(any("--playlist" in c for c in calls if c[1] == "play"))
+        self.assertTrue(any("--song" in c for c in calls if c[1] == "play"))
         self.assertEqual(self._play_oids(), [4132379])
 
     def test_play_bare_fails_when_resume_and_daily_fail(self) -> None:
@@ -1154,6 +1158,59 @@ class NeteaseMusicTests(unittest.TestCase):
         self.assertIsInstance(ctx.exception, nm.NeteaseMusicError)
         self.assertEqual(ctx.exception.info.get("login_url"), link)
         self.assertEqual(ctx.exception.info.get("logged_in"), False)
+
+    def test_wants_xiaodu_from_speaker_and_utterance(self) -> None:
+        self.assertTrue(nm.wants_xiaodu({"speaker": "xiaodu"}))
+        self.assertTrue(nm.wants_xiaodu({"speaker": "小度音箱"}))
+        self.assertTrue(
+            nm.wants_xiaodu({"user_input": "用小度音箱播放歌曲10"})
+        )
+        self.assertFalse(nm.wants_xiaodu({"user_input": "播放歌曲十年"}))
+        self.assertFalse(nm.wants_xiaodu({}))
+
+    def test_play_xiaodu_speaker_routes_after_song_play(self) -> None:
+        def fake_run(cmd, **_kwargs):
+            action = _ncm_action(cmd)
+            if action == "search":
+                return _completed(SEARCH_JSON)
+            if action == "play":
+                return _completed(PLAY_STDOUT)
+            self.fail(f"unexpected ncm-cli {cmd}")
+
+        with patch.object(nm, "ncm_cli_bin", return_value="/usr/bin/ncm-cli"):
+            with patch.object(nm.subprocess, "run", side_effect=fake_run):
+                with patch.object(nm, "enter_music_mode"):
+                    with patch.object(
+                        nm, "route_to_xiaodu", return_value="xiaodu playing: 十年"
+                    ) as routed:
+                        msg, outputs = nm.play_from_params(
+                            self._with_issuer(
+                                {
+                                    "song": "10",
+                                    "speaker": "xiaodu",
+                                    "user_input": "用小度音箱播放歌曲10",
+                                }
+                            )
+                        )
+        routed.assert_called_once()
+        record = routed.call_args[0][0]
+        self.assertEqual(record.get("name"), "十年")
+        self.assertTrue(outputs.get("xiaodu", {}).get("played"))
+        self.assertIn("小度", msg)
+
+    def test_route_to_xiaodu_prefers_song_url(self) -> None:
+        record = {
+            "originalId": 66842,
+            "id": "1B8FCF799FD5895F6F0586C7D19A0A3B",
+            "name": "十年",
+            "url": "http://m801.music.example/十年.mp3",
+        }
+        with patch("mac_edge.plugins.xiaodu_speaker.play_audio_url", return_value="xiaodu playing: 十年") as play_url:
+            with patch("mac_edge.plugins.xiaodu_speaker.play_live_capture") as live:
+                msg = nm.route_to_xiaodu(record)
+        self.assertEqual(msg, "xiaodu playing: 十年")
+        play_url.assert_called_once()
+        live.assert_not_called()
 
     def test_run_from_params_keeps_plain_error_when_logged_in(self) -> None:
         def fake_run(cmd, **_kwargs):

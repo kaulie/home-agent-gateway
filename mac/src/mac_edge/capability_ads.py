@@ -652,8 +652,8 @@ ADS: dict[str, dict[str, Any]] = {
     "music.play": _ad(
         kind="action",
         role="音乐播放器",
-        planner_recognize="按歌名/歌手/专辑开始放歌（网易云）。入参 song/artist/album。「xxx的歌」或仅歌手：连播多首（云歌单），不是单曲。不负责连蓝牙音箱，不负责暂停/切歌，不负责下载/缓存索引",
-        typical_triggers=["放一首周杰伦", "播放歌曲", "放歌", "放十年", "来首邓丽君"],
+        planner_recognize="按歌名/歌手/专辑开始放歌（网易云）。入参 song/artist/album；用户说「用小度音箱放歌」时仍用本步并设 speaker=xiaodu（不要改派 xiaodu.speak）。「xxx的歌」或仅歌手：连播多首（云歌单），不是单曲。不负责连蓝牙音箱，不负责暂停/切歌，不负责下载/缓存索引",
+        typical_triggers=["放一首周杰伦", "播放歌曲", "放歌", "放十年", "来首邓丽君", "用小度音箱播放"],
         do_not_dispatch=["蓝牙连接", "TTS", "开灯", "暂停", "下一首", "下载", "缓存"],
     ),
     "music.cache": _ad(

@@ -34,10 +34,12 @@ from mac_edge.ncm_songs import (
     NcmSongsError,
     find_by_name_artist,
     find_index_by_name_artist,
+    get_recording,
     get_song,
     init_db,
     normalize_text,
     record_play,
+    recording_is_complete,
     upsert_record,
 )
 from mac_edge.ncm_songs.store import data_dir as ncm_data_dir
@@ -914,7 +916,13 @@ def replace_playlist_tracks(
     return song_ids
 
 
-def play_playlist(*, encrypted_id: str, original_id: str) -> str:
+def play_playlist(*, encrypted_id: str, original_id: str) -> tuple[str, bool]:
+    """Play cloud playlist. Returns (msg, orpheus_only).
+
+    orpheus-only (no JSON) is a known fake-success under desktop orpheus —
+    the App may not actually start. Caller should kick the first track
+    with ``play --song``.
+    """
     payload = _run_ncm(
         [
             "play",
@@ -930,11 +938,13 @@ def play_playlist(*, encrypted_id: str, original_id: str) -> str:
     if payload.get("success") is not True and not _api_ok(payload):
         msg = str(payload.get("message") or "").strip()
         raise NeteaseMusicError(msg or "网易云歌单播放失败")
-    if payload.get("orpheus"):
-        return f"已唤起云音乐播放歌单 {original_id}"
+    orpheus_only = bool(payload.get("orpheus"))
+    if orpheus_only:
+        return f"已唤起云音乐播放歌单 {original_id}", True
     return (
         str(payload.get("message") or "").strip()
-        or f"已唤起云音乐播放歌单 {original_id}"
+        or f"已唤起云音乐播放歌单 {original_id}",
+        False,
     )
 
 
@@ -1132,16 +1142,26 @@ def play_artist_queue(records: list[dict[str, Any]]) -> tuple[str, int]:
         playlist_encrypted_id=pl_enc,
         records=records,
     )
-    msg = play_playlist(encrypted_id=pl_enc, original_id=pl_oid)
+    msg, orpheus_only = play_playlist(encrypted_id=pl_enc, original_id=pl_oid)
     added = max(0, len(song_ids) - 1)
-    try:
-        play_rec.start_playlist_session(records)
-    except Exception as e:  # noqa: BLE001 — recording must not fail play
-        log.warning("ncm playlist record start failed: %s", e)
+    if orpheus_only:
+        # play --playlist under orpheus often only emits a deep-link and
+        # never starts the App. Kick the first track with play --song
+        # (JSON success required) so 网易云 actually plays.
+        log.info("ncm playlist orpheus-only; kick first track play --song")
+        first_msg = play_record(records[0])
+        if first_msg:
+            msg = f"{msg}；{first_msg}"
+    else:
+        try:
+            play_rec.start_playlist_session(records)
+        except Exception as e:  # noqa: BLE001 — recording must not fail play
+            log.warning("ncm playlist record start failed: %s", e)
     log.info(
-        "ncm artist playlist play id=%s songs=%s",
+        "ncm artist playlist play id=%s songs=%s orpheus_only=%s",
         pl_oid,
         len(song_ids),
+        orpheus_only,
     )
     return msg, added
 
@@ -1258,17 +1278,22 @@ def play_daily_recommend_queue(
         total_ms,
         len(queue_records),
     )
-    return msg, {
-        "bare_mode": "daily",
-        "queue_count": len(queue_records),
-        "queue_added": queue_added,
-        "timing": {
-            "resume": resume_ms,
-            "search": search_ms,
-            "play": play_ms,
-            "total": total_ms,
+    return _finish_with_xiaodu(
+        msg,
+        {
+            "bare_mode": "daily",
+            "queue_count": len(queue_records),
+            "queue_added": queue_added,
+            "timing": {
+                "resume": resume_ms,
+                "search": search_ms,
+                "play": play_ms,
+                "total": total_ms,
+            },
         },
-    }
+        params,
+        record=queue_records[0] if queue_records else None,
+    )
 
 
 def play_bare_default(
@@ -1289,10 +1314,14 @@ def play_bare_default(
             resume_ms,
             total_ms,
         )
-        return resumed, {
-            "bare_mode": "resume",
-            "timing": {"resume": resume_ms, "total": total_ms},
-        }
+        return _finish_with_xiaodu(
+            resumed,
+            {
+                "bare_mode": "resume",
+                "timing": {"resume": resume_ms, "total": total_ms},
+            },
+            params,
+        )
     return play_daily_recommend_queue(
         params,
         trigger_text="每日推荐",
@@ -1326,7 +1355,7 @@ def resume_from_params(
         outputs["resume_fallback"] = "daily"
         return "无可继续，已改播每日推荐", outputs
     enter_music_mode(trigger_text="继续播放")
-    return msg or "已继续播放", {}
+    return _finish_with_xiaodu(msg or "已继续播放", {}, params)
 
 
 def _control(cap: str) -> str:
@@ -1342,6 +1371,105 @@ def _control(cap: str) -> str:
         raise NeteaseMusicError(msg or f"{cap} 失败")
     msg = str(payload.get("message") or "").strip()
     return msg or cap
+
+
+def wants_xiaodu(params: dict[str, Any] | None = None) -> bool:
+    """True when the user named 小度 as the output speaker."""
+    speaker = _str_param(params, "speaker")
+    if "xiaodu" in speaker.lower() or "小度" in speaker:
+        return True
+    user = _str_param(params, "user_input")
+    return bool(re.search(r"用小度|在小度|让小度|小度音箱|小度音响", user))
+
+
+def _http_url_from_obj(obj: dict[str, Any] | None) -> str | None:
+    if not isinstance(obj, dict):
+        return None
+    for key in ("url", "mp3Url", "downloadUrl", "songUrl"):
+        val = obj.get(key)
+        if isinstance(val, str) and val.startswith(("http://", "https://")):
+            return val
+    return None
+
+
+def fetch_song_http_url(record: dict[str, Any]) -> str | None:
+    """Best-effort song CDN URL: record fields, then ncm-cli url / song url."""
+    found = _http_url_from_obj(record)
+    if found:
+        return found
+    enc = str(record.get("id") or "").strip()
+    oid = record.get("originalId")
+    if not enc or oid in (None, ""):
+        return None
+    attempts = (
+        ["url", "--encrypted-id", enc, "--original-id", str(oid)],
+        ["song", "url", "--encrypted-id", enc, "--original-id", str(oid)],
+    )
+    for argv in attempts:
+        try:
+            payload = _run_ncm(argv, timeout_sec=CONTROL_TIMEOUT_SEC)
+        except NeteaseMusicError as e:
+            log.info("ncm song url skipped %s: %s", " ".join(argv[:2]), e)
+            continue
+        url = _http_url_from_obj(payload)
+        if url:
+            return url
+        data = payload.get("data")
+        if isinstance(data, str) and data.startswith(("http://", "https://")):
+            return data
+        if isinstance(data, dict):
+            url = _http_url_from_obj(data)
+            if url:
+                return url
+    return None
+
+
+def route_to_xiaodu(record: dict[str, Any] | None) -> str:
+    """Enable Xiaodu as the speaker for this track.
+
+    Prefer a local complete recording, then a song HTTP URL, else live
+    BlackHole capture so the speaker actually starts.
+    """
+    from mac_edge.plugins import xiaodu_speaker as xs
+
+    title = _record_name(record) if isinstance(record, dict) else ""
+    if isinstance(record, dict):
+        oid = record.get("originalId")
+        if oid not in (None, ""):
+            try:
+                keyed = int(oid)
+            except (TypeError, ValueError):
+                keyed = None
+            if keyed is not None and recording_is_complete(keyed):
+                rec = get_recording(keyed) or {}
+                path = str(rec.get("file_path") or "").strip()
+                if path:
+                    try:
+                        return xs.play_audio_file(path, title=title)
+                    except xs.XiaoduSpeakerError as e:
+                        log.warning("xiaodu file play failed: %s", e)
+        url = fetch_song_http_url(record)
+        if url:
+            return xs.play_audio_url(url, title=title)
+    return xs.play_live_capture(title=title or "网易云")
+
+
+def _finish_with_xiaodu(
+    msg: str,
+    outputs: dict[str, Any],
+    params: dict[str, Any] | None,
+    record: dict[str, Any] | None = None,
+) -> tuple[str, dict[str, Any]]:
+    if not wants_xiaodu(params):
+        return msg, outputs
+    try:
+        xiaodu_msg = route_to_xiaodu(record)
+    except Exception as e:
+        raise NeteaseMusicError(f"网易云已开播，但小度音箱播放失败：{e}") from e
+    out = dict(outputs)
+    out["xiaodu"] = {"played": True, "msg": xiaodu_msg}
+    combined = f"{msg}；已在小度音箱播放" if msg else xiaodu_msg
+    return combined, out
 
 
 def play_from_params(params: dict[str, Any] | None = None) -> tuple[str, dict[str, Any]]:
@@ -1463,7 +1591,7 @@ def play_from_params(params: dict[str, Any] | None = None) -> tuple[str, dict[st
         cache_label,
         f" queue={len(queue_records)}" if artist_queue else "",
     )
-    return msg, outputs
+    return _finish_with_xiaodu(msg, outputs, params, record=record)
 
 
 def paged_search_records(

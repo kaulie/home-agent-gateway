@@ -453,6 +453,11 @@ NETEASE_MUSIC_SERVICE: dict[str, Any] = {
                     "required": False,
                     "description": "专辑（本轮忽略）",
                 },
+                "speaker": {
+                    "type": "string",
+                    "required": False,
+                    "description": "输出音箱；xiaodu/小度=客厅小度",
+                },
             },
             output_schema={
                 "song": {
@@ -473,9 +478,10 @@ NETEASE_MUSIC_SERVICE: dict[str, Any] = {
             },
             planner_recognize=(
                 "从用户话里拆出歌名 song、可选作者 artist；不要把整句当 keyword。"
+                "用户说「用小度音箱放歌」时设 speaker=xiaodu，不要改派 xiaodu.speak。"
                 "本轮必须有 song，不能只按歌手或专辑点播。不负责暂停/切歌。"
             ),
-            typical_triggers=["放十年", "播放陈奕迅的十年"],
+            typical_triggers=["放十年", "播放陈奕迅的十年", "用小度音箱播放"],
             do_not_dispatch=["蓝牙连接", "TTS", "开灯", "暂停", "下一首", "下载", "缓存"],
         ),
         attach(
