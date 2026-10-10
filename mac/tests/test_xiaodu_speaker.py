@@ -80,6 +80,26 @@ class XiaoduSpeakerTests(unittest.TestCase):
         self.assertIn("xiaodu playing", msg)
         self.assertEqual(played, ["192.168.3.47", "192.168.3.48"])
 
+    def test_play_from_params_url_goes_to_xiaodu(self) -> None:
+        with mock.patch.object(xs, "play_audio_url", return_value="xiaodu playing: 十年") as fn:
+            msg, outputs = xs.play_from_params(
+                {"url": "http://m801.music.example/十年.mp3", "song": "十年"}
+            )
+        fn.assert_called_once_with("http://m801.music.example/十年.mp3", title="十年")
+        self.assertIn("xiaodu playing", msg)
+        self.assertIn("十年", outputs["status_text"])
+
+    def test_play_from_params_song_resolves_url(self) -> None:
+        with mock.patch(
+            "mac_edge.plugins.netease_music.resolve_playable_http_url",
+            return_value=("http://m801.music.example/十年.mp3", "十年"),
+        ):
+            with mock.patch.object(xs, "play_audio_url", return_value="xiaodu playing: 十年") as fn:
+                msg, outputs = xs.play_from_params({"song": "十年"})
+        fn.assert_called_once_with("http://m801.music.example/十年.mp3", title="十年")
+        self.assertEqual(outputs["song"], "十年")
+        self.assertIn("十年", outputs["status_text"])
+
     def test_play_from_params_uses_asset_url(self) -> None:
         """asset_ref(audio) → asset.http_url() → 交给小度播放；产出 status_text。"""
         from mac_edge.asset.types import AssetRef

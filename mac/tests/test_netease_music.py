@@ -1168,35 +1168,40 @@ class NeteaseMusicTests(unittest.TestCase):
         self.assertFalse(nm.wants_xiaodu({"user_input": "播放歌曲十年"}))
         self.assertFalse(nm.wants_xiaodu({}))
 
-    def test_play_xiaodu_speaker_routes_after_song_play(self) -> None:
+    def test_play_xiaodu_speaker_sends_url_without_netease_play(self) -> None:
         def fake_run(cmd, **_kwargs):
             action = _ncm_action(cmd)
             if action == "search":
                 return _completed(SEARCH_JSON)
+            if action in ("url", "song"):
+                return _completed('{"url": "http://m801.music.example/十年.mp3"}')
             if action == "play":
-                return _completed(PLAY_STDOUT)
+                self.fail("must not start NetEase play for Xiaodu URL cast")
             self.fail(f"unexpected ncm-cli {cmd}")
 
         with patch.object(nm, "ncm_cli_bin", return_value="/usr/bin/ncm-cli"):
             with patch.object(nm.subprocess, "run", side_effect=fake_run):
                 with patch.object(nm, "enter_music_mode"):
-                    with patch.object(
-                        nm, "route_to_xiaodu", return_value="xiaodu playing: 十年"
-                    ) as routed:
-                        msg, outputs = nm.play_from_params(
-                            self._with_issuer(
-                                {
-                                    "song": "10",
-                                    "speaker": "xiaodu",
-                                    "user_input": "用小度音箱播放歌曲10",
-                                }
+                    with patch(
+                        "mac_edge.plugins.xiaodu_speaker.play_audio_url",
+                        return_value="xiaodu playing: 十年",
+                    ) as play_url:
+                        with patch(
+                            "mac_edge.plugins.xiaodu_speaker.play_live_capture"
+                        ) as live:
+                            msg, outputs = nm.play_from_params(
+                                self._with_issuer(
+                                    {
+                                        "song": "10",
+                                        "speaker": "xiaodu",
+                                        "user_input": "用小度音箱播放歌曲10",
+                                    }
+                                )
                             )
-                        )
-        routed.assert_called_once()
-        record = routed.call_args[0][0]
-        self.assertEqual(record.get("name"), "十年")
+        play_url.assert_called_once()
+        live.assert_not_called()
         self.assertTrue(outputs.get("xiaodu", {}).get("played"))
-        self.assertIn("小度", msg)
+        self.assertIn("xiaodu playing", msg)
 
     def test_route_to_xiaodu_prefers_song_url(self) -> None:
         record = {

@@ -390,10 +390,25 @@ XIAODU_SPEAKER_SERVICE: dict[str, Any] = {
         attach(
             "xiaodu.play",
             input_schema={
+                "url": {
+                    "type": "string",
+                    "required": False,
+                    "description": "可拉流的 http(s) 音频地址；有则直接交给小度",
+                },
+                "song": {
+                    "type": "string",
+                    "required": False,
+                    "description": "歌名；无 url 时先解析出音频 URL 再交给小度",
+                },
+                "artist": {
+                    "type": "string",
+                    "required": False,
+                    "description": "歌手，仅收窄搜索",
+                },
                 "asset_ref": {
                     "type": "string",
-                    "required": True,
-                    "description": 'AssetRef JSON {asset_id, type: "audio", mime_type?}。禁止 path / 永久 URL。常为 $asset_ref。',
+                    "required": False,
+                    "description": 'AssetRef JSON {asset_id, type: "audio", mime_type?}。常为 $asset_ref。',
                 },
             },
             output_schema={
@@ -478,7 +493,7 @@ NETEASE_MUSIC_SERVICE: dict[str, Any] = {
             },
             planner_recognize=(
                 "从用户话里拆出歌名 song、可选作者 artist；不要把整句当 keyword。"
-                "用户说「用小度音箱放歌」时设 speaker=xiaodu，不要改派 xiaodu.speak。"
+                "用户说「用小度音箱播放」时不要派本步，改派 xiaodu.play。"
                 "本轮必须有 song，不能只按歌手或专辑点播。不负责暂停/切歌。"
             ),
             typical_triggers=["放十年", "播放陈奕迅的十年", "用小度音箱播放"],
