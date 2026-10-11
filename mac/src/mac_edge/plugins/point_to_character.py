@@ -9,7 +9,8 @@ Composite reading.point_to_character decomposes to those three on this Runtime.
 Input is an already-arranged Image Asset. This plugin does not capture photos.
 
 Bridges the Asset contract to character-service HTTP
-(http://127.0.0.1:9189/v1/{detect_finger,ocr_at_finger,rank_pointed}).
+(https://github.com/kaulie/character-service, default
+http://127.0.0.1:9189/v1/{detect_finger,ocr_at_finger,rank_pointed}).
 character-service itself knows nothing about HomeAgent Asset / Brain / Planner.
 
 Must not import vision_ask / query_content / gopro_camera.
