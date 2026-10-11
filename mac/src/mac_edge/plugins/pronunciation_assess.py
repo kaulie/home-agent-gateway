@@ -4,7 +4,8 @@ Atomic capability:
   pronunciation.assess   reference_audio + student_audio (audio AssetRef) → scores JSON
 
 Bridges the Asset contract to pronunciation-service HTTP
-(http://127.0.0.1:9190/v1/assess). The service knows nothing about HomeAgent
+(https://github.com/kaulie/pronunciation-service, default
+http://127.0.0.1:9190/v1/assess). The service knows nothing about HomeAgent
 Asset / Brain / Planner.
 
 This plugin does NOT record or upload audio. Both audio AssetRefs must already be
