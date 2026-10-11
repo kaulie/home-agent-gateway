@@ -10,6 +10,7 @@ from typing import Any
 from urllib.parse import urlparse
 
 from mac_edge.capability_ads import attach, named_appliance_overrides
+from mac_edge.marketplace_catalog import overlay_service_ads
 from mac_edge.plugins.chromecast_display import DEFAULT_CAST_DISPLAY_URL
 from mac_edge.plugins.image_search_providers import any_provider_configured
 from mac_edge.plugins.hisense_ac import (
@@ -2630,4 +2631,13 @@ def default_services() -> list[dict[str, Any]]:
             log.info("advertise mac.game.host (coin-catcher :8102)")
         except Exception as e:
             log.warning("skip mac.game.host — %s", e)
-    return services
+    refreshed: list[dict[str, Any]] = []
+    for svc in services:
+        sid = str(svc.get("service_id") or "")
+        preserve = (
+            frozenset({"role", "planner_recognize", "typical_triggers"})
+            if sid.startswith("climate.") or sid == CLIMATE_ADVERTISE_ID
+            else frozenset()
+        )
+        refreshed.append(overlay_service_ads(svc, preserve=preserve))
+    return refreshed
