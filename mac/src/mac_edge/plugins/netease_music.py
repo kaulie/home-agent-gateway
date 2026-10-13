@@ -1,7 +1,11 @@
 """Mac Edge: netease.music via ncm-cli (desktop 网易云 App / orpheus).
 
-LLM extracts song/artist. This plugin only assembles ncm-cli argv and
-reads/writes ``mac_edge.ncm_songs``. Keyword is one argv value.
+LLM/Brain may pass song/artist, or an opaque compound song like
+「陈奕迅的十年」. This plugin assembles ncm-cli argv and reads/writes
+``mac_edge.ncm_songs``. Keyword is one argv value.
+
+Compound 「歌手的歌名」(not playlist): search the full string as title
+first; if no exact title hit, split into artist+song and search again.
 
 「xxx的歌/歌曲」or artist-only: build a reusable cloud playlist then
 ``play --playlist`` (orpheus). Desktop ``queue add`` is a no-op under
@@ -72,10 +76,77 @@ _QUEUE_UNREADABLE_MARKERS = ("队列为空", "无法读取")
 
 # Longer first: 「的歌曲」 before 「的歌」. Not play-verb prefixes.
 _PLAYLIST_SUFFIXES = ("的歌曲", "的歌")
+_ARTIST_TITLE_PARTICLE = "的"
 _TRAILING_PUNCT = "。．.！!？?，,、；;：:…~～"
 # Leading quantity is not part of the artist/title (「几首周杰伦的歌」).
 _LEADING_QUANTITY = re.compile(r"^(?:几首|几曲|一些|(\d+)\s*首)\s*")
 _ORPHEUS_LINE = re.compile(r"\[orpheus\]\s*(orpheus://\S+)", re.IGNORECASE)
+# Left of 「X的Y」 that is almost never a spoken artist (我的祖国 / 爱的代价).
+_COMPOUND_LEFT_BLOCK = frozenset(
+    {
+        "我",
+        "你",
+        "他",
+        "她",
+        "它",
+        "咱",
+        "俺",
+        "谁",
+        "这",
+        "那",
+        "啥",
+        "我们",
+        "你们",
+        "他们",
+        "她们",
+        "它们",
+        "咱们",
+        "自己",
+        "大家",
+        "别人",
+        "有人",
+        "没人",
+        "心",
+        "梦",
+        "爱",
+        "情",
+        "夜",
+        "雨",
+        "风",
+        "天",
+        "海",
+        "山",
+        "花",
+        "月",
+        "世界",
+        "人间",
+        "天上",
+        "地上",
+        "梦里",
+        "心里",
+        "夜空",
+        "雨中",
+        "风中",
+        "童话",
+        "故事",
+        "青春",
+        "寂寞",
+        "孤独",
+        "最后",
+        "最初",
+        "唯一",
+        "一个",
+        "另一个",
+        "所有",
+        "全部",
+        "那些",
+        "这些",
+        "某个",
+        "乐队",
+        "歌手",
+        "艺人",
+    }
+)
 
 _MUSIC_CAPS = frozenset(
     {
@@ -290,6 +361,26 @@ def artist_from_playlist_remainder(remainder: str) -> str:
         if text.endswith(suffix):
             return text[: -len(suffix)].strip()
     return ""
+
+
+def artist_title_from_compound(remainder: str) -> tuple[str, str] | None:
+    """If remainder is 「歌手的歌名」, return (song_title, artist); else None.
+
+    Playlist forms 「xxx的歌/歌曲」 are not this mode. Song titles that
+    contain 「的」 (我的祖国 / 爱的代价) stay intact via length + blocklist.
+    """
+    text = str(remainder or "").strip().rstrip(_TRAILING_PUNCT).strip()
+    if not text or artist_from_playlist_remainder(text):
+        return None
+    if _ARTIST_TITLE_PARTICLE not in text:
+        return None
+    left, _, right = text.partition(_ARTIST_TITLE_PARTICLE)
+    left, right = left.strip(), right.strip()
+    if not left or not right:
+        return None
+    if left in _COMPOUND_LEFT_BLOCK or len(left) < 2 or len(left) > 12:
+        return None
+    return right, left
 
 
 def last_json_object(text: str) -> dict[str, Any]:
@@ -708,6 +799,63 @@ def search_title_then_artist(
         _record_name(picked),
         singer,
         picked.get("originalId"),
+    )
+    return picked
+
+
+def search_compound_then_split(
+    *,
+    song: str,
+    artist: str | None = None,
+    user_input: str | None = None,
+) -> dict[str, Any]:
+    """Search opaque 「歌手的歌名」 as full title; on miss, split and retry.
+
+    When ``artist`` is already set, delegates to ``search_record``.
+    Stage 1 requires an exact title hit on the full string. Otherwise, if
+    the string parses as 「X的Y」, stage 2 searches ``song=Y artist=X``.
+    If stage 2 fails but stage 1 had hits, pick from stage 1 as last resort.
+    """
+    title = str(song or "").strip()
+    singer = str(artist or "").strip()
+    if singer:
+        return search_record(song=title, artist=singer, user_input=user_input)
+    if not title:
+        raise NeteaseMusicError(NO_SONG_MSG)
+
+    records = search_records(keyword=title, user_input=user_input)
+    exact = find_exact_title(records, title)
+    if exact is not None:
+        log.info(
+            "ncm compound exact title hit name=%r id=%s",
+            _record_name(exact),
+            exact.get("originalId"),
+        )
+        return exact
+
+    parsed = artist_title_from_compound(title)
+    if parsed is not None:
+        song2, artist2 = parsed
+        log.info(
+            "ncm compound title miss name=%r; retry song=%r artist=%r",
+            title,
+            song2,
+            artist2,
+        )
+        try:
+            return search_record(song=song2, artist=artist2, user_input=user_input)
+        except NeteaseMusicError:
+            if not records:
+                raise
+
+    if not records:
+        raise NeteaseMusicError(f"网易云未找到歌曲「{title}」")
+    picked = pick_search_record(records, keyword=title, song=title)
+    log.info(
+        "ncm compound fallback pick name=%r id=%s keyword=%r",
+        _record_name(picked),
+        picked.get("originalId"),
+        title,
     )
     return picked
 
@@ -1612,7 +1760,7 @@ def play_from_params(params: dict[str, Any] | None = None) -> tuple[str, dict[st
                 user_input=user_input or None,
             )
         else:
-            record = search_record(
+            record = search_compound_then_split(
                 song=song,
                 artist=artist or None,
                 user_input=user_input or None,

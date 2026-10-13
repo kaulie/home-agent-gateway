@@ -482,7 +482,9 @@ class NeteaseMusicTests(unittest.TestCase):
                             "user_input": "播放陈奕迅的十年",
                         }
                     )
-        search = calls[0]
+        search_calls = [c for c in calls if "search" in c]
+        self.assertGreaterEqual(len(search_calls), 1)
+        search = search_calls[0]
         self.assertEqual(
             search[1:],
             [
@@ -775,7 +777,22 @@ class NeteaseMusicTests(unittest.TestCase):
         self.assertIsNone(ncm_store.get_song(400)["played_at"])
         self.assertEqual(len(ncm_store.list_library(limit=40)), 10)
 
+    def test_artist_title_from_compound(self) -> None:
+        self.assertEqual(
+            nm.artist_title_from_compound("陈奕迅的十年"),
+            ("十年", "陈奕迅"),
+        )
+        self.assertEqual(
+            nm.artist_title_from_compound("新裤子的没有理想的人不伤心"),
+            ("没有理想的人不伤心", "新裤子"),
+        )
+        self.assertIsNone(nm.artist_title_from_compound("陈奕迅的歌"))
+        self.assertIsNone(nm.artist_title_from_compound("我的祖国"))
+        self.assertIsNone(nm.artist_title_from_compound("爱的代价"))
+        self.assertIsNone(nm.artist_title_from_compound("十年"))
+
     def test_eason_de_shinian_is_title_search_not_playlist(self) -> None:
+        """Compound song is not playlist mode; title miss retries artist+song."""
         calls: list[list[str]] = []
 
         def fake_run(cmd, **_kwargs):
@@ -789,11 +806,90 @@ class NeteaseMusicTests(unittest.TestCase):
                 with patch.object(nm, "enter_music_mode"):
                     nm.play_from_params({"song": "陈奕迅的十年"})
         search_calls = [c for c in calls if "search" in c]
+        self.assertEqual(len(search_calls), 2)
+        self.assertEqual(
+            search_calls[0][search_calls[0].index("--keyword") + 1],
+            "陈奕迅的十年",
+        )
+        self.assertEqual(
+            search_calls[1][search_calls[1].index("--keyword") + 1],
+            "十年 陈奕迅",
+        )
+        self.assertFalse(any("--playlist" in c for c in calls))
+
+    def test_compound_exact_title_skips_split(self) -> None:
+        exact_json = json.dumps(
+            {
+                "code": 200,
+                "data": {
+                    "records": [
+                        {
+                            "originalId": 99,
+                            "id": "EXACT",
+                            "name": "陈奕迅的十年",
+                            "artists": [{"name": "合辑"}],
+                        }
+                    ],
+                },
+            },
+            ensure_ascii=False,
+        )
+        calls: list[list[str]] = []
+
+        def fake_run(cmd, **_kwargs):
+            calls.append(list(cmd))
+            if "search" in cmd:
+                return _completed(exact_json)
+            return _completed(PLAY_STDOUT)
+
+        with patch.object(nm, "ncm_cli_bin", return_value="/usr/bin/ncm-cli"):
+            with patch.object(nm.subprocess, "run", side_effect=fake_run):
+                with patch.object(nm, "enter_music_mode"):
+                    nm.play_from_params(self._with_issuer({"song": "陈奕迅的十年"}))
+        search_calls = [c for c in calls if "search" in c]
         self.assertEqual(len(search_calls), 1)
         self.assertEqual(
             search_calls[0][search_calls[0].index("--keyword") + 1],
             "陈奕迅的十年",
         )
+        self.assertEqual(self._play_oids(), [99])
+
+    def test_song_title_with_de_does_not_split(self) -> None:
+        title_json = json.dumps(
+            {
+                "code": 200,
+                "data": {
+                    "records": [
+                        {
+                            "originalId": 77,
+                            "id": "TITLE",
+                            "name": "我的祖国",
+                            "artists": [{"name": "郭兰英"}],
+                        }
+                    ],
+                },
+            },
+            ensure_ascii=False,
+        )
+        calls: list[list[str]] = []
+
+        def fake_run(cmd, **_kwargs):
+            calls.append(list(cmd))
+            if "search" in cmd:
+                return _completed(title_json)
+            return _completed(PLAY_STDOUT)
+
+        with patch.object(nm, "ncm_cli_bin", return_value="/usr/bin/ncm-cli"):
+            with patch.object(nm.subprocess, "run", side_effect=fake_run):
+                with patch.object(nm, "enter_music_mode"):
+                    nm.play_from_params(self._with_issuer({"song": "我的祖国"}))
+        search_calls = [c for c in calls if "search" in c]
+        self.assertEqual(len(search_calls), 1)
+        self.assertEqual(
+            search_calls[0][search_calls[0].index("--keyword") + 1],
+            "我的祖国",
+        )
+        self.assertEqual(self._play_oids(), [77])
 
     def test_clamp_cache_count(self) -> None:
         self.assertEqual(nm.clamp_cache_count(None), 100)
