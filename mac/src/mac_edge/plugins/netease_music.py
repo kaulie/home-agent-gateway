@@ -1392,6 +1392,27 @@ def _http_url_from_obj(obj: dict[str, Any] | None) -> str | None:
     return None
 
 
+def lookup_song_record(
+    *,
+    song: str,
+    artist: str = "",
+    user_input: str | None = None,
+) -> dict[str, Any]:
+    """Cache or search for a track. Does not start the NetEase app."""
+    title = str(song or "").strip()
+    who = str(artist or "").strip()
+    if not title and not who:
+        raise NeteaseMusicError("小度放歌需要歌名或音频地址")
+    cached = _cached_record(song=title, artist=who)
+    if cached:
+        return cached
+    return search_record(
+        song=title or who,
+        artist=who or None,
+        user_input=user_input,
+    )
+
+
 def resolve_playable_http_url(
     *,
     song: str,
@@ -1401,20 +1422,32 @@ def resolve_playable_http_url(
     """Search/cache only — return (url, title). Does not start the NetEase app."""
     title = str(song or "").strip()
     who = str(artist or "").strip()
-    if not title and not who:
-        raise NeteaseMusicError("小度放歌需要歌名或音频地址")
-    cached = _cached_record(song=title, artist=who)
-    record = cached or search_record(
-        song=title or who,
-        artist=who or None,
-        user_input=user_input,
-    )
+    record = lookup_song_record(song=title, artist=who, user_input=user_input)
     url = fetch_song_http_url(record)
     if not url:
         raise NeteaseMusicError(
             f"没有可给小度拉流的音频地址：{_record_name(record) or title or who}"
         )
     return url, _record_name(record) or title or who
+
+
+def cast_song_to_xiaodu(
+    *,
+    song: str,
+    artist: str = "",
+    user_input: str | None = None,
+) -> tuple[str, str]:
+    """Resolve song and cast to Xiaodu.
+
+    Prefer CDN / local recording URL. ncm-cli does not expose stream URLs, so
+    when none exist, start NetEase playback and push BlackHole live MP3.
+    """
+    title = str(song or "").strip()
+    who = str(artist or "").strip()
+    record = lookup_song_record(song=title, artist=who, user_input=user_input)
+    name = _record_name(record) or title or who
+    msg = route_to_xiaodu(record, ensure_playing=True)
+    return msg, name
 
 
 def fetch_song_http_url(record: dict[str, Any]) -> str | None:
@@ -1449,11 +1482,17 @@ def fetch_song_http_url(record: dict[str, Any]) -> str | None:
     return None
 
 
-def route_to_xiaodu(record: dict[str, Any] | None) -> str:
+def route_to_xiaodu(
+    record: dict[str, Any] | None,
+    *,
+    ensure_playing: bool = False,
+) -> str:
     """Enable Xiaodu as the speaker for this track.
 
-    Prefer a local complete recording, then a song HTTP URL, else live
-    BlackHole capture so the speaker actually starts.
+    Prefer a local complete recording, then a song HTTP URL. If neither works,
+    optionally start NetEase (``ensure_playing``) and push BlackHole live MP3
+    — official ncm-cli has no song stream-URL command, so this is the real cast
+    path for 「用小度音箱播放歌曲…」.
     """
     from mac_edge.plugins import xiaodu_speaker as xs
 
@@ -1476,8 +1515,15 @@ def route_to_xiaodu(record: dict[str, Any] | None) -> str:
         url = fetch_song_http_url(record)
         if url:
             return xs.play_audio_url(url, title=title)
+        if ensure_playing:
+            play_record(record)
+        try:
+            return xs.play_live_capture(title=title or "网易云")
+        except xs.XiaoduSpeakerError as e:
+            raise NeteaseMusicError(
+                f"没有可给小度拉流的音频地址：{title or '歌曲'}"
+            ) from e
     raise NeteaseMusicError(f"没有可给小度拉流的音频地址：{title or '歌曲'}")
-
 
 def _finish_with_xiaodu(
     msg: str,
@@ -1575,7 +1621,8 @@ def play_from_params(params: dict[str, Any] | None = None) -> tuple[str, dict[st
         cache_label = "miss"
     t_play = time.perf_counter()
     if wants_xiaodu(params):
-        msg = route_to_xiaodu(record)
+        # ncm-cli 通常给不出 CDN URL：先开播再 BlackHole 推流（ensure_playing）
+        msg = route_to_xiaodu(record, ensure_playing=True)
         queue_added = 0
     elif artist_queue:
         msg, queue_added = play_artist_queue(queue_records)

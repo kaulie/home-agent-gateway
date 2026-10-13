@@ -1212,10 +1212,48 @@ class NeteaseMusicTests(unittest.TestCase):
         }
         with patch("mac_edge.plugins.xiaodu_speaker.play_audio_url", return_value="xiaodu playing: 十年") as play_url:
             with patch("mac_edge.plugins.xiaodu_speaker.play_live_capture") as live:
-                msg = nm.route_to_xiaodu(record)
+                with patch.object(nm, "play_record") as play_rec:
+                    msg = nm.route_to_xiaodu(record, ensure_playing=True)
         self.assertEqual(msg, "xiaodu playing: 十年")
         play_url.assert_called_once()
         live.assert_not_called()
+        play_rec.assert_not_called()
+
+    def test_route_to_xiaodu_live_fallback_starts_netease(self) -> None:
+        """无 CDN URL 时先 play_record，再 BlackHole 推流（修复 intent 823）。"""
+        record = {
+            "originalId": 66842,
+            "id": "1B8FCF799FD5895F6F0586C7D19A0A3B",
+            "name": "十年",
+        }
+        with patch.object(nm, "fetch_song_http_url", return_value=None):
+            with patch.object(nm, "recording_is_complete", return_value=False):
+                with patch.object(nm, "play_record", return_value="已开播") as play_rec:
+                    with patch(
+                        "mac_edge.plugins.xiaodu_speaker.play_live_capture",
+                        return_value="xiaodu live: 十年",
+                    ) as live:
+                        msg = nm.route_to_xiaodu(record, ensure_playing=True)
+        self.assertEqual(msg, "xiaodu live: 十年")
+        play_rec.assert_called_once_with(record)
+        live.assert_called_once()
+
+    def test_cast_song_to_xiaodu_uses_ensure_playing(self) -> None:
+        record = {
+            "originalId": 66842,
+            "id": "1B8FCF799FD5895F6F0586C7D19A0A3B",
+            "name": "十年",
+        }
+        with patch.object(nm, "lookup_song_record", return_value=record):
+            with patch.object(
+                nm, "route_to_xiaodu", return_value="xiaodu live: 十年"
+            ) as route:
+                msg, title = nm.cast_song_to_xiaodu(
+                    song="十年", user_input="用小度音箱播放歌曲十年"
+                )
+        self.assertEqual(title, "十年")
+        self.assertEqual(msg, "xiaodu live: 十年")
+        route.assert_called_once_with(record, ensure_playing=True)
 
     def test_run_from_params_keeps_plain_error_when_logged_in(self) -> None:
         def fake_run(cmd, **_kwargs):

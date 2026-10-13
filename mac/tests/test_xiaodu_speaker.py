@@ -91,14 +91,31 @@ class XiaoduSpeakerTests(unittest.TestCase):
 
     def test_play_from_params_song_resolves_url(self) -> None:
         with mock.patch(
-            "mac_edge.plugins.netease_music.resolve_playable_http_url",
-            return_value=("http://m801.music.example/十年.mp3", "十年"),
-        ):
-            with mock.patch.object(xs, "play_audio_url", return_value="xiaodu playing: 十年") as fn:
-                msg, outputs = xs.play_from_params({"song": "十年"})
-        fn.assert_called_once_with("http://m801.music.example/十年.mp3", title="十年")
+            "mac_edge.plugins.netease_music.cast_song_to_xiaodu",
+            return_value=("xiaodu playing: 十年", "十年"),
+        ) as cast:
+            msg, outputs = xs.play_from_params({"song": "十年"})
+        cast.assert_called_once_with(song="十年", artist="", user_input=None)
+        self.assertEqual(msg, "xiaodu playing: 十年")
         self.assertEqual(outputs["song"], "十年")
         self.assertIn("十年", outputs["status_text"])
+
+    def test_play_from_params_song_falls_back_when_no_cdn_url(self) -> None:
+        """intent #823：ncm-cli 无流地址时仍应投到小度，而不是直接报「没有音频地址」。"""
+        with mock.patch(
+            "mac_edge.plugins.netease_music.cast_song_to_xiaodu",
+            return_value=("xiaodu live: 十年", "十年"),
+        ) as cast:
+            msg, outputs = xs.play_from_params(
+                {"song": "十年", "user_input": "用小度音箱播放歌曲十年"}
+            )
+        cast.assert_called_once_with(
+            song="十年",
+            artist="",
+            user_input="用小度音箱播放歌曲十年",
+        )
+        self.assertIn("xiaodu live", msg)
+        self.assertEqual(outputs["song"], "十年")
 
     def test_play_from_params_uses_asset_url(self) -> None:
         """asset_ref(audio) → asset.http_url() → 交给小度播放；产出 status_text。"""
