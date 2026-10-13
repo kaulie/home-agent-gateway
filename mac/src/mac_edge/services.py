@@ -408,7 +408,10 @@ XIAODU_PLAY_SERVICE: dict[str, Any] = {
                 "song": {
                     "type": "string",
                     "required": False,
-                    "description": "歌名；无 url 时先解析出音频 URL 再交给小度",
+                    "description": (
+                        "歌名；无 url 时先找可拉流地址，找不到则本机网易云开播"
+                        "并经 BlackHole 推给小度"
+                    ),
                 },
                 "artist": {
                     "type": "string",

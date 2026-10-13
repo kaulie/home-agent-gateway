@@ -755,7 +755,11 @@ def play_from_params(
     probe_fn: Any = None,
     **_kwargs: Any,
 ) -> tuple[str, dict[str, Any]]:
-    """xiaodu.play：url / song / asset_ref → 小度 DLNA 播放。不开本机网易云。"""
+    """xiaodu.play：url / song / asset_ref → 小度 DLNA 播放。
+
+    有 url/asset 时只投流。song 优先 CDN/本地录音；ncm-cli 无流地址时
+    回退为本机网易云开播 + BlackHole 实时推流（避免「没有可给小度拉流的音频地址」）。
+    """
     from mac_edge.asset.types import AssetError
 
     raw = params if isinstance(params, dict) else {}
@@ -771,14 +775,13 @@ def play_from_params(
         from mac_edge.plugins import netease_music as nm
 
         try:
-            resolved, title = nm.resolve_playable_http_url(
+            msg, title = nm.cast_song_to_xiaodu(
                 song=song,
                 artist=artist,
                 user_input=str(raw.get("user_input") or "").strip() or None,
             )
         except nm.NeteaseMusicError as e:
             raise XiaoduSpeakerError(str(e)) from e
-        msg = play_audio_url(resolved, title=title)
         return msg, {"status_text": f"已在小度音箱播放{title}", "song": title}
 
     # 鸭子类型检查（与 display.audio / pdf_display 同口径）：真机无差别，单测可用最小替身
