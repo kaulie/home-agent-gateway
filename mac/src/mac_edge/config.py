@@ -170,8 +170,8 @@ class Config:
     # Domain → URL when MAC_EDGE_BRAIN_URL is a JSON object {"lan": "...", "cloud": "..."}.
     brain_urls_by_domain: dict[str, str] = field(default_factory=dict)
     interval_sec: float = 3.0
-    # When the local ledger still has open intents, poll faster than idle.
-    # Idle floor stays at interval_sec (default 3s); busy default 0.5s.
+    # Intent peek cadence (control channel). Heartbeat still uses interval_sec.
+    # Keep this low: empty-ledger idle at 3s made parsed→dispatched ~3.5s (#842).
     busy_interval_sec: float = 0.5
     identity: Identity = field(default_factory=Identity)
     data_dir: Path = field(default_factory=lambda: _project_root() / "data")

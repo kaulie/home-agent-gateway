@@ -579,18 +579,15 @@ class EdgeAgent:
             self._suppressed_brain_errors += 1
 
     def _poll_interval_sec(self) -> float:
-        """Idle 3s; when local ledger still has open work, poll at busy_interval."""
-        idle = float(self.config.interval_sec)
+        """Intent discovery cadence.
+
+        Idle used to sleep ``MAC_EDGE_INTERVAL_SEC`` (default/env 3s) when the
+        ledger was empty. Intent #842 then sat ~3.5s at ``intent_parsed`` before
+        the next peek — Edge accept→execute was already same-second. Discovery
+        always uses ``busy_interval_sec``; heartbeat keeps ``interval_sec``.
+        """
         busy = float(getattr(self.config, "busy_interval_sec", 0.5) or 0.5)
-        eid = self._get_edge_id()
-        if not eid:
-            return idle
-        try:
-            if self._ledger.snapshot_open(eid):
-                return max(DEADLINE_SLEEP_MIN_SEC, min(busy, idle))
-        except Exception:
-            log.debug("poll interval: snapshot_open failed", exc_info=True)
-        return idle
+        return max(DEADLINE_SLEEP_MIN_SEC, busy)
 
     def _backoff_seconds(self) -> float:
         # 3, 6, 12, 24, 48, 96, cap 120 — still probes while Brain is down.
