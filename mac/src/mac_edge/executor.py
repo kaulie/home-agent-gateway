@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import threading
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 from typing import Any
 
@@ -512,8 +513,9 @@ def handle_intent(
             posted_terminal = True
             break
 
-        # Local RUNNING immediately. Sync flush to Brain before long I/O so
-        # clients leave intent_dispatched without waiting minutes in the dark.
+        # Local RUNNING immediately. Flush to Brain in the background so a
+        # slow cloud Brain RTT (intent #839: ~5–6s per status POST) does not
+        # delay the capability itself.
         step["status"] = STEP_RUNNING
         if ledger is not None:
             ledger.set_step_status(
@@ -521,7 +523,7 @@ def handle_intent(
             )
             running_ts = BRAIN_CLOCK.now_ms()
             ledger.set_intent_status(iid, "running", ts_ms=running_ts)
-            _flush_ledger_to_brain(
+            _flush_ledger_to_brain_bg(
                 ledger,
                 brain,
                 eid,
@@ -803,7 +805,7 @@ def _flush_ledger_to_brain(
     label: str,
     prefer_intent_id: str | None = None,
 ) -> bool:
-    """Best-effort synchronous ledger → Brain replay (RUNNING must not lag)."""
+    """Best-effort synchronous ledger → Brain replay."""
     if brain is None:
         return False
     try:
@@ -816,6 +818,45 @@ def _flush_ledger_to_brain(
     except Exception as e:
         log.warning("ledger: sync flush %s failed: %s", label, e)
         return False
+
+
+def _flush_ledger_to_brain_bg(
+    ledger: Any,
+    brain: BrainClient | None,
+    edge_id: str,
+    *,
+    label: str,
+    prefer_intent_id: str | None = None,
+) -> None:
+    """Fire-and-forget flush so capability I/O is not gated on Brain RTT."""
+    if brain is None or ledger is None:
+        return
+
+    def _run() -> None:
+        _flush_ledger_to_brain(
+            ledger,
+            brain,
+            edge_id,
+            label=label,
+            prefer_intent_id=prefer_intent_id,
+        )
+
+    threading.Thread(
+        target=_run,
+        name=f"ledger-flush-{label}",
+        daemon=True,
+    ).start()
+
+
+# Intermediate wire states: local ledger is source of truth; Brain sync is
+# best-effort and must not block dispatch / step start (cloud Brain ~5s RTT).
+_ASYNC_INTENT_STATUSES = frozenset(
+    {
+        "intent_scheduled",
+        "intent_dispatched",
+        "running",
+    }
+)
 
 
 def _try_post_step_status(
@@ -900,6 +941,18 @@ def _try_post_intent_status(
         ledger.set_intent_status(intent_id, status, ts_ms=event_ts)
     if brain is None:
         return False
+    wire = str(status or "").strip().lower()
+    # Non-terminal: enqueue local work immediately; Brain catches up via bg
+    # post + ledger flush (intent #839 lost ~6s on sync dispatched alone).
+    if wire in _ASYNC_INTENT_STATUSES and hasattr(brain, "post_intent_status_bg"):
+        brain.post_intent_status_bg(
+            intent_id,
+            status=status,
+            edge_node_id=edge_id,
+            message=message,
+            ts_ms=event_ts,
+        )
+        return True
     try:
         brain.post_intent_status(
             intent_id,
