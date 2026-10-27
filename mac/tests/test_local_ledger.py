@@ -565,6 +565,22 @@ class LocalLedgerTests(unittest.TestCase):
         self.assertGreaterEqual(posted, 1)
         self.assertTrue(all(row[1] != "running" for row in brain.intent_posts))
 
+    def test_flush_keeps_dispatched_after_local_terminal_step(self) -> None:
+        """Intent #847: do not drop intent_dispatched when play already failed."""
+        self.ledger.ingest_peek(
+            [_waiting_intent(intent_status="intent_parsed")], EID
+        )
+        self.ledger.set_intent_status(IID, "intent_dispatched", ts_ms=10)
+        self.ledger.set_step_status(IID, 1, 3, ts_ms=20, msg="logout")
+        self.ledger.set_intent_status(IID, "failed", ts_ms=30)
+        brain = _FakeBrain()
+        posted = self.ledger.flush_to_brain(brain, EID)  # type: ignore[arg-type]
+        self.assertGreaterEqual(posted, 1)
+        wires = [row[1] for row in brain.intent_posts]
+        self.assertIn("intent_dispatched", wires)
+        self.assertIn("failed", wires)
+        self.assertLess(wires.index("intent_dispatched"), wires.index("failed"))
+
 
 if __name__ == "__main__":
     unittest.main()

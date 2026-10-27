@@ -295,6 +295,17 @@ class LocalLedger:
                     rec["status_ts_ms"] = None
             else:
                 rec["status_ts_ms"] = None
+            # Keep every hop so a later terminal flush can still deliver
+            # intent_dispatched after a lost background POST (intent #847).
+            hist = rec.get("status_history")
+            if not isinstance(hist, list):
+                hist = []
+                rec["status_history"] = hist
+            try:
+                hist_ts = int(ts_ms) if ts_ms is not None else None
+            except (TypeError, ValueError):
+                hist_ts = None
+            hist.append({"status": wire, "ts_ms": hist_ts, "synced": False})
             rec["synced"] = False
             self._persist_unlocked()
 
@@ -536,12 +547,24 @@ class LocalLedger:
             rec = self._intents.get(iid)
             if rec is None:
                 return
-            if status is not None:
-                current = str(rec.get("status") or "").strip().lower()
-                if current != str(status).strip().lower():
-                    self._persist_unlocked()
-                    return
-            rec["synced"] = True
+            wire = str(status or "").strip().lower() if status is not None else None
+            hist = rec.get("status_history")
+            if isinstance(hist, list) and wire:
+                for ev in hist:
+                    if not isinstance(ev, dict):
+                        continue
+                    if str(ev.get("status") or "").strip().lower() != wire:
+                        continue
+                    if ev.get("synced") is True:
+                        continue
+                    ev["synced"] = True
+                    break
+            current = str(rec.get("status") or "").strip().lower()
+            if isinstance(hist, list) and hist:
+                if all(isinstance(e, dict) and e.get("synced") is True for e in hist):
+                    rec["synced"] = True
+            elif wire is None or not current or wire == current:
+                rec["synced"] = True
             self._drop_if_done_unlocked(iid, rec)
             self._persist_unlocked()
 
@@ -681,34 +704,56 @@ class LocalLedger:
             self.mark_step_synced(iid, n, status=st, seq=seq_i)
             posted += 1
         with self._lock:
-            intent_jobs = [
-                (
-                    iid,
-                    str(rec.get("status") or "").strip().lower() or "running",
-                    rec.get("status_ts_ms"),
-                )
-                for iid, rec in self._intents.items()
-                if rec.get("synced") is not True
-            ]
+            intent_jobs: list[tuple[str, str, int | None]] = []
+            for iid, rec in self._intents.items():
+                hist = rec.get("status_history")
+                if isinstance(hist, list) and hist:
+                    for ev in hist:
+                        if not isinstance(ev, dict) or ev.get("synced") is True:
+                            continue
+                        wire = str(ev.get("status") or "").strip().lower()
+                        if not wire:
+                            continue
+                        try:
+                            ts_i = (
+                                int(ev["ts_ms"])
+                                if ev.get("ts_ms") is not None
+                                else None
+                            )
+                        except (TypeError, ValueError):
+                            ts_i = None
+                        intent_jobs.append((iid, wire, ts_i))
+                    continue
+                if rec.get("synced") is True:
+                    continue
+                wire = str(rec.get("status") or "").strip().lower() or "running"
+                try:
+                    ts_i = (
+                        int(rec["status_ts_ms"])
+                        if rec.get("status_ts_ms") is not None
+                        else None
+                    )
+                except (TypeError, ValueError):
+                    ts_i = None
+                intent_jobs.append((iid, wire, ts_i))
         if prefer:
             intent_jobs.sort(key=lambda row: 0 if row[0] == prefer else 1)
         for iid, wire, status_ts in intent_jobs:
             rec = self.get(iid)
-            if rec is None or rec.get("synced") is True:
-                continue
-            if str(rec.get("status") or "").strip().lower() != wire:
+            if rec is None:
                 continue
             # Intent #843: after a terminal step already reached Brain, a late
             # RUNNING flush must not burn another RTT (or block the next flush).
-            if wire in ("intent_scheduled", "intent_dispatched", "running"):
-                if _record_has_local_terminal_step(rec):
-                    log.info(
-                        "ledger: skip stale intent %s status=%s (local step already terminal)",
-                        iid,
-                        wire,
-                    )
-                    self.mark_intent_synced(iid, status=wire)
-                    continue
+            # Intent #847: still deliver intent_dispatched — skipping it left
+            # status_log as parsed→failed and froze the client on 意图解析完成.
+            if wire == "running" and _record_has_local_terminal_step(rec):
+                log.info(
+                    "ledger: skip stale intent %s status=%s (local step already terminal)",
+                    iid,
+                    wire,
+                )
+                self.mark_intent_synced(iid, status=wire)
+                continue
             try:
                 ts_i: int | None
                 try:
