@@ -887,7 +887,22 @@ def _try_post_step_status(
         )
         if brain is None:
             return False
-        return ledger.flush_to_brain(brain, edge_id) > 0
+        # Terminal: post now, never wait on a background RUNNING flush holding
+        # ``_flush_lock`` (intent #843 burned ~15s after music.play already failed).
+        if status in (STEP_SUCCEEDED, STEP_FAILED):
+            return ledger.post_terminal_step_now(
+                brain,
+                edge_id,
+                intent_id,
+                step_num,
+                status=status,
+                outputs=outputs,
+                ts_ms=event_ts,
+                msg=note,
+            )
+        return ledger.flush_to_brain(
+            brain, edge_id, prefer_intent_id=intent_id
+        ) > 0
     if brain is None:
         return False
     last: BrainError | None = None

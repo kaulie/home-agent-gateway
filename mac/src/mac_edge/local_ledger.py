@@ -349,6 +349,182 @@ class LocalLedger:
             self._drop_if_done_unlocked(iid, rec)
             self._persist_unlocked()
 
+    def post_terminal_step_now(
+        self,
+        brain: BrainClient,
+        edge_id: str,
+        intent_id: str,
+        step_num: int,
+        *,
+        status: int,
+        outputs: dict[str, Any] | None = None,
+        ts_ms: int | None = None,
+        msg: str | None = None,
+    ) -> bool:
+        """Push a terminal step to Brain without waiting on ``_flush_lock``.
+
+        Intent #843: capability failed in ~3s, but ``_try_post_step_status``
+        blocked ~15s on a background RUNNING flush that held the flush lock
+        across slow Brain RTTs. Terminal outcomes must reach Brain immediately
+        so clients leave the journey without waiting for that backlog.
+        """
+        eid = (edge_id or "").strip()
+        iid = str(intent_id).strip()
+        n = int(step_num)
+        st = int(status)
+        if st not in (STEP_SUCCEEDED, STEP_FAILED) or not eid or not iid:
+            return False
+
+        # Peek only — keep the event queued until Brain accepts (or rejects as
+        # obsolete) so a failed direct post can still be flushed later.
+        peeked = self._peek_step_event(iid, n, status=st)
+        if peeked is None:
+            peeked = {
+                "status": st,
+                "ts_ms": int(ts_ms) if ts_ms is not None else BRAIN_CLOCK.now_ms(),
+                "seq": None,
+                "outputs": dict(outputs) if outputs else None,
+                "msg": str(msg).strip() if msg else None,
+            }
+
+        outs = peeked.get("outputs") if isinstance(peeked.get("outputs"), dict) else None
+        if outs is None and outputs:
+            outs = dict(outputs)
+        try:
+            ts_i = int(peeked["ts_ms"]) if peeked.get("ts_ms") is not None else None
+        except (TypeError, ValueError):
+            ts_i = None
+        note = str(peeked.get("msg") or "").strip() or None
+        try:
+            brain.post_step_status(
+                iid,
+                n,
+                step_status=st,
+                edge_node_id=eid,
+                outputs=outs,
+                ts_ms=ts_i,
+                msg=note,
+            )
+        except BrainError as e:
+            if _is_obsolete_replay(str(e)):
+                log.warning(
+                    "ledger: terminal step %s/%s status=%s already on Brain (%s)",
+                    iid,
+                    n,
+                    st,
+                    e,
+                )
+                self._discard_leading_non_terminal(iid, n)
+                self._discard_matching_step_event(iid, n, status=st)
+                return True
+            log.warning(
+                "ledger: terminal step %s/%s status=%s direct post failed: %s",
+                iid,
+                n,
+                st,
+                e,
+            )
+            return False
+
+        # Drop stale RUNNING ahead of the terminal event, then the terminal itself.
+        self._discard_leading_non_terminal(iid, n)
+        self._discard_matching_step_event(iid, n, status=st)
+        return True
+
+    def _peek_step_event(
+        self,
+        intent_id: str,
+        step_num: int,
+        *,
+        status: int,
+    ) -> dict[str, Any] | None:
+        """Copy the first queued event matching status (leave queue intact)."""
+        iid = str(intent_id).strip()
+        n = int(step_num)
+        st = int(status)
+        with self._lock:
+            rec = self._intents.get(iid)
+            if rec is None:
+                return None
+            for step in rec.get("execution_plan") or []:
+                if not isinstance(step, dict):
+                    continue
+                if int(step.get("step") or 0) != n:
+                    continue
+                q = step.get("sync_queue") or []
+                if not isinstance(q, list):
+                    return None
+                for raw in q:
+                    if not isinstance(raw, dict):
+                        continue
+                    if int(raw.get("status") or 0) != st:
+                        continue
+                    return json.loads(json.dumps(raw))
+                return None
+        return None
+
+    def _discard_matching_step_event(
+        self,
+        intent_id: str,
+        step_num: int,
+        *,
+        status: int,
+    ) -> None:
+        """Remove the first queued event matching status."""
+        iid = str(intent_id).strip()
+        n = int(step_num)
+        st = int(status)
+        with self._lock:
+            rec = self._intents.get(iid)
+            if rec is None:
+                return
+            for step in rec.get("execution_plan") or []:
+                if not isinstance(step, dict):
+                    continue
+                if int(step.get("step") or 0) != n:
+                    continue
+                q = step.get("sync_queue") or []
+                if not isinstance(q, list):
+                    return
+                for idx, raw in enumerate(q):
+                    if not isinstance(raw, dict):
+                        continue
+                    if int(raw.get("status") or 0) != st:
+                        continue
+                    q.pop(idx)
+                    step["synced"] = not bool(q)
+                    self._drop_if_done_unlocked(iid, rec)
+                    self._persist_unlocked()
+                    return
+                return
+
+    def _discard_leading_non_terminal(self, intent_id: str, step_num: int) -> None:
+        iid = str(intent_id).strip()
+        n = int(step_num)
+        with self._lock:
+            rec = self._intents.get(iid)
+            if rec is None:
+                return
+            for step in rec.get("execution_plan") or []:
+                if not isinstance(step, dict):
+                    continue
+                if int(step.get("step") or 0) != n:
+                    continue
+                q = step.get("sync_queue") or []
+                if not isinstance(q, list) or not q:
+                    return
+                changed = False
+                while q and isinstance(q[0], dict):
+                    head_st = int(q[0].get("status") or 0)
+                    if head_st in (STEP_SUCCEEDED, STEP_FAILED):
+                        break
+                    q.pop(0)
+                    changed = True
+                if changed:
+                    step["synced"] = not bool(q)
+                    self._persist_unlocked()
+                return
+
     def mark_intent_synced(
         self,
         intent_id: str,
@@ -522,6 +698,17 @@ class LocalLedger:
                 continue
             if str(rec.get("status") or "").strip().lower() != wire:
                 continue
+            # Intent #843: after a terminal step already reached Brain, a late
+            # RUNNING flush must not burn another RTT (or block the next flush).
+            if wire in ("intent_scheduled", "intent_dispatched", "running"):
+                if _record_has_local_terminal_step(rec):
+                    log.info(
+                        "ledger: skip stale intent %s status=%s (local step already terminal)",
+                        iid,
+                        wire,
+                    )
+                    self.mark_intent_synced(iid, status=wire)
+                    continue
             try:
                 ts_i: int | None
                 try:
@@ -874,6 +1061,20 @@ def _recurring_series_open(rec: dict[str, Any], intent_id: str, now_ms: int) -> 
         beat = int(step.get("beat") or get_beat(intent_id, n))
         gate = timing_gate(timing, now_ms, beat)
         if not gate.terminal:
+            return True
+    return False
+
+
+def _record_has_local_terminal_step(rec: dict[str, Any]) -> bool:
+    """True when any step is already SUCCEEDED/FAILED locally."""
+    for step in rec.get("execution_plan") or []:
+        if not isinstance(step, dict):
+            continue
+        try:
+            st = int(step.get("status", STEP_WAITING))
+        except (TypeError, ValueError):
+            st = STEP_WAITING
+        if st in (STEP_SUCCEEDED, STEP_FAILED):
             return True
     return False
 

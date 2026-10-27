@@ -26,6 +26,7 @@ import os
 import re
 import shutil
 import subprocess
+import threading
 import time
 from collections import Counter
 from pathlib import Path
@@ -298,14 +299,23 @@ def _run_login_cli(bin_path: str, args: list[str], timeout_sec: float):
         return None
 
 
+def ncm_login_link_cached() -> str:
+    """Return a still-fresh cached login link, or '' (never calls ncm-cli)."""
+    if _login_link_cache is None:
+        return ""
+    cached_at, cached_link = _login_link_cache
+    if cached_link and time.monotonic() - cached_at < LOGIN_LINK_TTL_SEC:
+        return cached_link
+    return ""
+
+
 def ncm_login_link(bin_path: str | None = None) -> str:
     """Fresh scan login link from ``ncm-cli login --background`` ('' on failure)."""
     global _login_link_cache
+    cached = ncm_login_link_cached()
+    if cached:
+        return cached
     now = time.monotonic()
-    if _login_link_cache is not None:
-        cached_at, cached_link = _login_link_cache
-        if cached_link and now - cached_at < LOGIN_LINK_TTL_SEC:
-            return cached_link
     bin_path = bin_path or ncm_cli_bin()
     if not bin_path:
         return ""
@@ -331,7 +341,9 @@ def ncm_login_required_info(
     poller that completes the login once scanned).
 
     When ``known_reason`` already looks like a login failure (e.g. play returned
-    「请先登录实名账号…」), skip ``login --check`` and go straight to the link.
+    「请先登录实名账号…」), skip ``login --check`` and attach a *cached* link
+    only — never block the fail path on ``login --background`` (intent #843
+    still burned 1.5s on a link timeout that returned nothing).
     """
     bin_path = ncm_cli_bin()
     if not bin_path:
@@ -342,9 +354,18 @@ def ncm_login_required_info(
             "reason": str(known_reason).strip() or "未登录",
         }
         if fetch_link:
-            link = ncm_login_link(bin_path)
+            link = ncm_login_link_cached()
             if link:
                 info["login_url"] = link
+            else:
+                # Mint in the background so a later retry can attach the URL;
+                # do not delay this failure report.
+                threading.Thread(
+                    target=ncm_login_link,
+                    args=(bin_path,),
+                    name="ncm-login-link",
+                    daemon=True,
+                ).start()
         return info
     proc = _run_login_cli(bin_path, ["login", "--check"], LOGIN_CHECK_TIMEOUT_SEC)
     if proc is None:
