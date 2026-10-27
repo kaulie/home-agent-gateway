@@ -218,8 +218,10 @@ netease_configured = ncm_cli_configured
 
 # Login probes must stay short: intent #835 spent ~45s (= old 15s check + 30s
 # link) after play already failed with an explicit「请先登录」message.
+# Intent #839 still burned the full 5s link timeout on the fail path — keep
+# minting a QR when possible, but never stall the user-facing failure that long.
 LOGIN_CHECK_TIMEOUT_SEC = 3.0
-LOGIN_LINK_TIMEOUT_SEC = 5.0
+LOGIN_LINK_TIMEOUT_SEC = 1.5
 # Reuse a freshly minted login link for a while: the QR lives ~5min and every
 # ``login --background`` spawns another poller, so do not stampede.
 LOGIN_LINK_TTL_SEC = 240.0
