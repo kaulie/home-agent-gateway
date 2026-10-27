@@ -857,6 +857,10 @@ _ASYNC_INTENT_STATUSES = frozenset(
         "running",
     }
 )
+# When the ledger owns durability, terminal intent status must not wait on a
+# full Brain HTTP timeout either (intent #846: music.play already failed with
+# 「请先登录」in ~7s, then sync step+intent failed posts burned ~20s each).
+_ASYNC_TERMINAL_INTENT_WITH_LEDGER = frozenset({"failed", "succeeded"})
 
 
 def _try_post_step_status(
@@ -887,9 +891,22 @@ def _try_post_step_status(
         )
         if brain is None:
             return False
-        # Terminal: post now, never wait on a background RUNNING flush holding
+        # Terminal: never wait on a background RUNNING flush holding
         # ``_flush_lock`` (intent #843 burned ~15s after music.play already failed).
+        # And never wait on Brain itself when FAIL is already local truth
+        # (intent #846 burned another ~20s on unreachable Brain).
         if status in (STEP_SUCCEEDED, STEP_FAILED):
+            if status == STEP_FAILED and hasattr(brain, "post_step_status_bg"):
+                brain.post_step_status_bg(
+                    intent_id,
+                    step_num,
+                    step_status=status,
+                    edge_node_id=edge_id,
+                    outputs=outputs,
+                    ts_ms=event_ts,
+                    msg=note,
+                )
+                return True
             return ledger.post_terminal_step_now(
                 brain,
                 edge_id,
@@ -960,6 +977,21 @@ def _try_post_intent_status(
     # Non-terminal: enqueue local work immediately; Brain catches up via bg
     # post + ledger flush (intent #839 lost ~6s on sync dispatched alone).
     if wire in _ASYNC_INTENT_STATUSES and hasattr(brain, "post_intent_status_bg"):
+        brain.post_intent_status_bg(
+            intent_id,
+            status=status,
+            edge_node_id=edge_id,
+            message=message,
+            ts_ms=event_ts,
+        )
+        return True
+    # Terminal with ledger: same fire-and-forget — do not block the user-facing
+    # fail path on Brain RTT / http_timeout (intent #846).
+    if (
+        wire in _ASYNC_TERMINAL_INTENT_WITH_LEDGER
+        and ledger is not None
+        and hasattr(brain, "post_intent_status_bg")
+    ):
         brain.post_intent_status_bg(
             intent_id,
             status=status,
