@@ -164,6 +164,45 @@ class LocalLedger:
                 out.append(rec)
         return out
 
+    def prune_blocked_foreign(self, edge_id: str) -> int:
+        """Drop ledger rows that cannot run here (foreign/blocked predecessors).
+
+        Keeps rows with unsynced sync_queue so Brain still gets status replay.
+        """
+        eid = (edge_id or "").strip()
+        if not eid:
+            return 0
+        now = BRAIN_CLOCK.now_ms()
+        dropped = 0
+        with self._lock:
+            doomed: list[str] = []
+            for iid, rec in self._intents.items():
+                if _record_has_remaining_work(rec, iid, eid, now):
+                    continue
+                if rec.get("synced") is not True:
+                    continue
+                # Any step still has a pending sync event?
+                busy_queue = False
+                for step in rec.get("execution_plan") or []:
+                    if isinstance(step, dict) and step.get("sync_queue"):
+                        busy_queue = True
+                        break
+                if busy_queue:
+                    continue
+                doomed.append(iid)
+            for iid in doomed:
+                self._intents.pop(iid, None)
+                dropped += 1
+            if dropped:
+                self._persist_unlocked()
+        if dropped:
+            log.info(
+                "ledger: pruned %s blocked/foreign intent(s) (edge_id=%s)",
+                dropped,
+                eid,
+            )
+        return dropped
+
     def get(self, intent_id: str) -> dict[str, Any] | None:
         iid = str(intent_id).strip()
         with self._lock:
@@ -845,19 +884,45 @@ def _record_has_remaining_work(
     edge_id: str,
     now_ms: int,
 ) -> bool:
+    """True only when this edge still has a locally assigned runnable step.
+
+    Intent #838 was delayed ~12s because the ledger kept 11 cross-edge
+    intents (camera on phone, etc.) as "open". Empty assignee or foreign
+    assignee must not keep the control loop in busy-poll / enqueue thrash.
+    Steps blocked on unfinished predecessors also do not count — they cannot
+    run until the other edge finishes.
+    """
     plan = rec.get("execution_plan") or []
     if not isinstance(plan, list) or not plan:
         return False
     eid = (edge_id or "").strip()
-    for step in plan:
-        if not isinstance(step, dict):
+    if not eid:
+        return False
+    ordered = sorted(
+        [s for s in plan if isinstance(s, dict)],
+        key=lambda s: int(s.get("step") or 0),
+    )
+    for step in ordered:
+        assigned = str(step.get("assigned_edge_id") or "").strip()
+        if assigned != eid:
             continue
-        if eid:
-            assigned = str(step.get("assigned_edge_id") or "").strip()
-            if assigned and assigned != eid:
-                continue
-        timing = parse_execution_timing(step)
         n = int(step.get("step") or 0)
+        # Blocked on a predecessor (often another edge) — not local work yet.
+        preds_ok = True
+        for pred in ordered:
+            pn = int(pred.get("step") or 0)
+            if pn >= n:
+                break
+            try:
+                pst = int(pred.get("status", STEP_WAITING))
+            except (TypeError, ValueError):
+                pst = STEP_WAITING
+            if pst != STEP_SUCCEEDED:
+                preds_ok = False
+                break
+        if not preds_ok:
+            continue
+        timing = parse_execution_timing(step)
         beat = int(step.get("beat") or get_beat(intent_id, n))
         if timing.is_recurring:
             gate = timing_gate(timing, now_ms, beat)
@@ -870,6 +935,4 @@ def _record_has_remaining_work(
             st = STEP_WAITING
         if st in (STEP_WAITING, STEP_RUNNING):
             return True
-        if st == STEP_FAILED:
-            continue
     return False

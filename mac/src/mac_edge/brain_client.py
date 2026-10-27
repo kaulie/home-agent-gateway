@@ -260,6 +260,9 @@ class BrainClient:
             params["intent_status"] = status_pin
         if not consume:
             params["peek"] = "1"
+        # Brain defaults to last=5; with many open jobs a brand-new intent can
+        # fall off the window (esp. if ids are sorted as strings). Ask for more.
+        params["last"] = "50"
         log.debug(
             "GET intents edge_id=%s consume=%s status_pin=%s",
             eid,

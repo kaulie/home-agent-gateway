@@ -211,11 +211,22 @@ class MultiBrainClient:
                 drain()
 
     def pull_intents(self, edge_id: str, *, consume: bool = False) -> list[dict[str, Any]]:
+        """Pull from every Brain; never let a slow secondary stall LAN discovery.
+
+        Intent #838 sat ~12s at intent_parsed while the control tick could burn
+        the full HTTP timeout on cloud after a fast LAN empty/partial peek.
+        """
         merged: list[dict[str, Any]] = []
         seen: set[str] = set()
-        for url, bc in zip(self._base_urls, self._clients):
+        secondary_timeout_sec = 2.0
+        for idx, (url, bc) in enumerate(zip(self._base_urls, self._clients)):
             try:
-                items = bc.pull_intents(edge_id, consume=consume) or []
+                if idx == 0:
+                    items = bc.pull_intents(edge_id, consume=consume) or []
+                else:
+                    items = self._pull_intents_bounded(
+                        bc, edge_id, consume=consume, timeout_sec=secondary_timeout_sec
+                    )
             except BrainError as e:
                 if e.is_unauthorized:
                     raise
@@ -233,6 +244,40 @@ class MultiBrainClient:
                 item.setdefault(_ORIGIN_TAG, url)
                 merged.append(item)
         return merged
+
+    @staticmethod
+    def _pull_intents_bounded(
+        bc: BrainClient,
+        edge_id: str,
+        *,
+        consume: bool,
+        timeout_sec: float,
+    ) -> list[dict[str, Any]]:
+        """Best-effort pull with a hard wall-clock budget (secondary Brains)."""
+        box: dict[str, Any] = {"items": [], "err": None}
+
+        def _run() -> None:
+            try:
+                box["items"] = bc.pull_intents(edge_id, consume=consume) or []
+            except Exception as e:  # noqa: BLE001 — surfaced via box
+                box["err"] = e
+
+        t = threading.Thread(target=_run, name="pull-secondary-brain", daemon=True)
+        t.start()
+        t.join(timeout=max(0.2, float(timeout_sec)))
+        if t.is_alive():
+            log.warning(
+                "pull_intents from secondary Brain timed out after %.1fs — continuing with primary",
+                timeout_sec,
+            )
+            return []
+        err = box.get("err")
+        if err is not None:
+            if isinstance(err, BrainError):
+                raise err
+            raise BrainError(str(err)) from err
+        items = box.get("items") or []
+        return items if isinstance(items, list) else []
 
     # ---- routed ops (status / step / delivery) ----
 

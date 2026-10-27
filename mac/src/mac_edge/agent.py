@@ -422,6 +422,9 @@ class EdgeAgent:
         flushed = self._ledger.flush_to_brain(brain, eid)
         if flushed:
             log.info("intents: flushed %d ledger record(s) to Brain", flushed)
+        pruned = self._ledger.prune_blocked_foreign(eid)
+        if pruned:
+            log.info("intents: pruned %d blocked/foreign ledger row(s)", pruned)
         self._scheduler.reconcile_peeked_terminal(peeked, edge_id=eid, brain=brain)
         delivered = run_pending_deliveries(peeked, edge_id=eid, brain=brain)
         if delivered:
