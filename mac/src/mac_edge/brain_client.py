@@ -529,11 +529,23 @@ class BrainClient:
         epoch: int | None = None,
         ts_ms: int | None = None,
     ) -> None:
-        """Fire-and-forget intent status (does not block the executor)."""
-        ep = _bump_intent_epoch(intent_id) if epoch is None else epoch
+        """Fire-and-forget intent status (does not block the executor).
+
+        Epoch cancellation applies to ``running`` only. Bumping on every
+        intermediate status made a subsequent RUNNING post drop an in-flight
+        ``intent_dispatched`` (intent #844: status_log jumped received→parsed→failed,
+        Console billed ~18s onto 「待下发到中控」).
+        """
+        wire = str(status or "").strip().lower()
+        use_epoch = wire == "running"
+        ep = (
+            (_bump_intent_epoch(intent_id) if epoch is None else epoch)
+            if use_epoch
+            else None
+        )
 
         def _run() -> None:
-            if not _intent_epoch_current(intent_id, ep):
+            if ep is not None and not _intent_epoch_current(intent_id, ep):
                 log.info(
                     "skip stale background intent_status %s→%s epoch=%s",
                     intent_id,
