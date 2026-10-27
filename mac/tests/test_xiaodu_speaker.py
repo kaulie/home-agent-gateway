@@ -117,6 +117,44 @@ class XiaoduSpeakerTests(unittest.TestCase):
         self.assertIn("xiaodu live", msg)
         self.assertEqual(outputs["song"], "十年")
 
+    def test_play_from_params_song_keeps_login_required(self) -> None:
+        """Intent #849: do not wrap NeteaseMusicLoginRequired as XiaoduSpeakerError."""
+        from mac_edge.plugins import netease_music as nm
+
+        reason = "请先登录实名账号，执行 ncm-cli login 完成登录"
+        info = {"logged_in": False, "reason": reason, "login_url": "https://163cn.tv/x"}
+        with mock.patch(
+            "mac_edge.plugins.netease_music.cast_song_to_xiaodu",
+            side_effect=nm.NeteaseMusicLoginRequired(reason, info),
+        ):
+            with self.assertRaises(nm.NeteaseMusicLoginRequired) as ctx:
+                xs.play_from_params(
+                    {"song": "十年", "user_input": "用小度音箱播放歌曲十年"}
+                )
+        self.assertEqual(str(ctx.exception), reason)
+        self.assertEqual(ctx.exception.info.get("login_url"), "https://163cn.tv/x")
+
+    def test_executor_xiaodu_play_reports_netease_login(self) -> None:
+        """Intent #849: executor must surface netease_login for Brain."""
+        from mac_edge.executor import _execute_capability
+        from mac_edge.plugins import netease_music as nm
+
+        reason = "请先登录实名账号，执行 ncm-cli login 完成登录"
+        info = {"logged_in": False, "reason": reason, "login_url": "https://163cn.tv/x"}
+        with mock.patch(
+            "mac_edge.executor.xiaodu_play_from_params",
+            side_effect=nm.NeteaseMusicLoginRequired(reason, info),
+        ):
+            ok, msg, outputs = _execute_capability(
+                "xiaodu.play",
+                mock.MagicMock(),
+                params={"song": "十年", "user_input": "用小度音箱播放歌曲十年"},
+                config=mock.MagicMock(),
+            )
+        self.assertFalse(ok)
+        self.assertEqual(msg, reason)
+        self.assertEqual(outputs.get("netease_login"), info)
+
     def test_play_from_params_uses_asset_url(self) -> None:
         """asset_ref(audio) → asset.http_url() → 交给小度播放；产出 status_text。"""
         from mac_edge.asset.types import AssetRef

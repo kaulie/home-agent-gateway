@@ -1498,6 +1498,83 @@ class NeteaseMusicTests(unittest.TestCase):
         self.assertEqual(msg, "xiaodu live: 十年")
         route.assert_called_once_with(record, ensure_playing=True)
 
+    def test_cast_song_to_xiaodu_fails_fast_on_logout_cache(self) -> None:
+        """Intent #849: xiaodu.play must share music.play logout TTL fast-path."""
+        reason = "请先登录实名账号，执行 ncm-cli login 完成登录"
+        nm.remember_logout(reason)
+        calls: list[list[str]] = []
+
+        def fake_run(cmd, **_kwargs):
+            calls.append(list(cmd))
+            if cmd[1:3] == ["login", "--check"]:
+                return _completed(
+                    '{"success": false, "message": "未登录，请执行 ncm-cli login 完成登录"}'
+                )
+            if cmd[1:3] == ["login", "--background"]:
+                return _completed(
+                    '{"success": true, "clickableUrl": "https://163cn.tv/xiaodu"}'
+                )
+            self.fail(f"must not reach search/url/play after logout cache: {cmd}")
+
+        with patch.object(nm, "ncm_cli_bin", return_value="/usr/bin/ncm-cli"):
+            with patch.object(nm.subprocess, "run", side_effect=fake_run):
+                with self.assertRaises(nm.NeteaseMusicLoginRequired) as ctx:
+                    nm.cast_song_to_xiaodu(
+                        song="十年", user_input="用小度音箱播放歌曲十年"
+                    )
+        self.assertTrue(nm.looks_like_login_required(str(ctx.exception)))
+        self.assertTrue(any(c[1:3] == ["login", "--check"] for c in calls))
+        self.assertFalse(any(_ncm_action(c) in ("search", "play", "url") for c in calls))
+
+    def test_fetch_song_http_url_stops_on_login_error(self) -> None:
+        """Intent #849: do not burn a second 15s url probe after「请先登录」."""
+        reason = "请先登录实名账号，执行 ncm-cli login 完成登录"
+        record = {
+            "originalId": 66842,
+            "id": "1B8FCF799FD5895F6F0586C7D19A0A3B",
+            "name": "十年",
+        }
+        calls: list[list[str]] = []
+
+        def fake_run(cmd, **_kwargs):
+            calls.append(list(cmd))
+            return _completed(
+                json.dumps({"success": False, "message": reason}, ensure_ascii=False),
+                returncode=1,
+            )
+
+        with patch.object(nm, "ncm_cli_bin", return_value="/usr/bin/ncm-cli"):
+            with patch.object(nm.subprocess, "run", side_effect=fake_run):
+                with self.assertRaises(nm.NeteaseMusicError) as ctx:
+                    nm.fetch_song_http_url(record)
+        self.assertEqual(str(ctx.exception), reason)
+        self.assertEqual(len(calls), 1, "must not try the second url argv after login fail")
+
+    def test_cast_song_to_xiaodu_promotes_login_on_route_fail(self) -> None:
+        """First xiaodu.play logout must remember + raise typed login required."""
+        reason = "请先登录实名账号，执行 ncm-cli login 完成登录"
+        nm.clear_logout_cache()
+        record = {
+            "originalId": 66842,
+            "id": "1B8FCF799FD5895F6F0586C7D19A0A3B",
+            "name": "十年",
+        }
+        with patch.object(nm, "lookup_song_record", return_value=record):
+            with patch.object(
+                nm, "route_to_xiaodu", side_effect=nm.NeteaseMusicError(reason)
+            ):
+                with patch.object(nm, "ncm_cli_bin", return_value="/usr/bin/ncm-cli"):
+                    with patch.object(
+                        nm.subprocess,
+                        "run",
+                        side_effect=AssertionError("must skip sync login probe"),
+                    ):
+                        # known_reason path: no login --check / --background sync
+                        with self.assertRaises(nm.NeteaseMusicLoginRequired) as ctx:
+                            nm.cast_song_to_xiaodu(song="十年")
+        self.assertEqual(str(ctx.exception), reason)
+        self.assertEqual(nm.cached_logout_reason(), reason)
+
     def test_run_from_params_keeps_plain_error_when_logged_in(self) -> None:
         def fake_run(cmd, **_kwargs):
             if cmd[1:3] == ["login", "--check"]:

@@ -1794,6 +1794,10 @@ def _execute_capability(
         try:
             msg, outputs = xiaodu_play_from_params(params, asset=asset)
             return True, msg, outputs
+        except NeteaseMusicLoginRequired as e:
+            # Intent #849: song→cast hits the same ncm-cli logout as music.play;
+            # report raw login info so Brain can decide delivery.
+            return False, str(e), {"netease_login": e.info}
         except (XiaoduSpeakerError, AssetError) as e:
             return False, str(e), {}
         except Exception as e:

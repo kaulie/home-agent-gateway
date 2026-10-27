@@ -780,6 +780,11 @@ def play_from_params(
                 artist=artist,
                 user_input=str(raw.get("user_input") or "").strip() or None,
             )
+        except nm.NeteaseMusicLoginRequired:
+            # Keep typed login failure so executor can attach netease_login
+            # (Brain iPhone link). Do not wrap as XiaoduSpeakerError.
+            # cast_song_to_xiaodu already promoted + remembered logout.
+            raise
         except nm.NeteaseMusicError as e:
             raise XiaoduSpeakerError(str(e)) from e
         return msg, {"status_text": f"已在小度音箱播放{title}", "song": title}
