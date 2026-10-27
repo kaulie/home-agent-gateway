@@ -301,6 +301,24 @@ def raise_if_known_logged_out() -> None:
     remember_logout(refreshed)
     raise NeteaseMusicLoginRequired(refreshed, info)
 
+
+def promote_login_required(exc: BaseException) -> None:
+    """If ``exc`` proves NetEase logout, remember it and raise ``NeteaseMusicLoginRequired``.
+
+    No-op when the error is not a login failure (caller re-raises the original).
+    Shared by ``music.*`` and ``xiaodu.play`` cast so logout is cached + Brain
+    gets ``netease_login`` even when the user named the Xiaodu speaker.
+    """
+    if isinstance(exc, NeteaseMusicLoginRequired):
+        remember_logout(str(exc))
+        raise
+    if not isinstance(exc, NeteaseMusicError):
+        return
+    info = ncm_login_required_info(known_reason=str(exc))
+    if info:
+        remember_logout(str(exc))
+        raise NeteaseMusicLoginRequired(str(exc), info) from None
+
 def _login_payload(combined: str) -> dict[str, Any]:
     try:
         return last_json_object(combined)
@@ -1723,12 +1741,22 @@ def cast_song_to_xiaodu(
 
     Prefer CDN / local recording URL. ncm-cli does not expose stream URLs, so
     when none exist, start NetEase playback and push BlackHole live MP3.
+
+    Intent #849: share music.play's logout fast-path. Without it, a logged-out
+    ncm-cli burned ~30s on serial ``url`` / ``song url`` probes (15s each) before
+    the same「请先登录…」failure music.play already caches.
     """
+    # Prior logout must not pay another full URL/play RTT on xiaodu.play.
+    raise_if_known_logged_out()
     title = str(song or "").strip()
     who = str(artist or "").strip()
-    record = lookup_song_record(song=title, artist=who, user_input=user_input)
-    name = _record_name(record) or title or who
-    msg = route_to_xiaodu(record, ensure_playing=True)
+    try:
+        record = lookup_song_record(song=title, artist=who, user_input=user_input)
+        name = _record_name(record) or title or who
+        msg = route_to_xiaodu(record, ensure_playing=True)
+    except NeteaseMusicError as e:
+        promote_login_required(e)
+        raise
     return msg, name
 
 
@@ -1749,8 +1777,15 @@ def fetch_song_http_url(record: dict[str, Any]) -> str | None:
         try:
             payload = _run_ncm(argv, timeout_sec=CONTROL_TIMEOUT_SEC)
         except NeteaseMusicError as e:
+            # Intent #849: login failure must not fall through to the next
+            # 15s probe (or play_record) — surface it immediately.
+            if looks_like_login_required(str(e)):
+                raise
             log.info("ncm song url skipped %s: %s", " ".join(argv[:2]), e)
             continue
+        fail_msg = str(payload.get("message") or "").strip()
+        if payload.get("success") is False and looks_like_login_required(fail_msg):
+            raise NeteaseMusicError(fail_msg)
         url = _http_url_from_obj(payload)
         if url:
             return url
@@ -2077,18 +2112,11 @@ def run_from_params(
         raise NeteaseMusicError(f"unsupported capability {cap}")
     try:
         result = _run_music_capability(cap, params)
-    except NeteaseMusicLoginRequired as e:
-        remember_logout(str(e))
-        raise
     except NeteaseMusicError as e:
         # Any music failure while ncm-cli is logged out is really a login failure
         # (the CLI silently drops authenticated commands, e.g. ``playlist``).
         # Report the full login info raw; Brain decides who gets the link.
-        # Pass the original error so an explicit「请先登录…」skips login --check.
-        info = ncm_login_required_info(known_reason=str(e))
-        if info:
-            remember_logout(str(e))
-            raise NeteaseMusicLoginRequired(str(e), info) from None
+        promote_login_required(e)
         raise
     clear_logout_cache()
     return result
