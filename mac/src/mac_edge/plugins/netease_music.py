@@ -216,12 +216,39 @@ def ncm_cli_configured() -> bool:
 netease_configured = ncm_cli_configured
 
 
-LOGIN_CHECK_TIMEOUT_SEC = 15.0
-LOGIN_LINK_TIMEOUT_SEC = 30.0
+# Login probes must stay short: intent #835 spent ~45s (= old 15s check + 30s
+# link) after play already failed with an explicit「请先登录」message.
+LOGIN_CHECK_TIMEOUT_SEC = 3.0
+LOGIN_LINK_TIMEOUT_SEC = 5.0
 # Reuse a freshly minted login link for a while: the QR lives ~5min and every
 # ``login --background`` spawns another poller, so do not stampede.
 LOGIN_LINK_TTL_SEC = 240.0
 _login_link_cache: tuple[float, str] | None = None
+
+# Play/search already said login is required — skip the redundant ``login --check``.
+_LOGIN_REQUIRED_MARKERS = (
+    "请先登录",
+    "实名账号",
+    "ncm-cli login",
+    "未登录",
+    "登录已失效",
+    "login required",
+)
+
+
+def looks_like_login_required(message: str) -> bool:
+    """True when the CLI error itself already proves a login failure."""
+    text = str(message or "").strip()
+    if not text:
+        return False
+    lower = text.lower()
+    for marker in _LOGIN_REQUIRED_MARKERS:
+        if marker.isascii():
+            if marker.lower() in lower:
+                return True
+        elif marker in text:
+            return True
+    return False
 
 
 def _login_payload(combined: str) -> dict[str, Any]:
@@ -231,18 +258,38 @@ def _login_payload(combined: str) -> dict[str, Any]:
         return {}
 
 
+def _timeout_output_text(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="replace")
+    return str(value)
+
+
 def _run_login_cli(bin_path: str, args: list[str], timeout_sec: float):
     """Best-effort ncm-cli login subcommand; None when it cannot run.
 
     Never let the login probe mask the real music failure it is describing.
+    On timeout, still return a CompletedProcess with any partial stdout/stderr
+    so a hung QR poller can still yield ``clickableUrl``.
     """
+    timeout = max(1.0, float(timeout_sec))
+    cmd = [bin_path, *args]
     try:
         return subprocess.run(
-            [bin_path, *args],
+            cmd,
             capture_output=True,
             text=True,
-            timeout=max(5.0, float(timeout_sec)),
+            timeout=timeout,
             check=False,
+        )
+    except subprocess.TimeoutExpired as e:
+        log.warning("ncm-cli %s timed out after %.1fs", " ".join(args), timeout)
+        return subprocess.CompletedProcess(
+            list(e.cmd) if e.cmd else cmd,
+            returncode=-1,
+            stdout=_timeout_output_text(e.stdout),
+            stderr=_timeout_output_text(e.stderr),
         )
     except Exception as e:  # noqa: BLE001
         log.warning("ncm-cli %s failed: %s", " ".join(args), e)
@@ -270,23 +317,40 @@ def ncm_login_link(bin_path: str | None = None) -> str:
     return link
 
 
-def ncm_login_required_info(*, fetch_link: bool = True) -> dict[str, Any]:
+def ncm_login_required_info(
+    *,
+    fetch_link: bool = True,
+    known_reason: str | None = None,
+) -> dict[str, Any]:
     """Raw ncm-cli login state, or ``{}`` when logged in / unknowable.
 
     Reported verbatim to Brain, which decides whether the *originating* device
     should get the login link. ``fetch_link`` mints a fresh link (and starts the
     poller that completes the login once scanned).
+
+    When ``known_reason`` already looks like a login failure (e.g. play returned
+    「请先登录实名账号…」), skip ``login --check`` and go straight to the link.
     """
     bin_path = ncm_cli_bin()
     if not bin_path:
         return {}
+    if known_reason is not None and looks_like_login_required(known_reason):
+        info: dict[str, Any] = {
+            "logged_in": False,
+            "reason": str(known_reason).strip() or "未登录",
+        }
+        if fetch_link:
+            link = ncm_login_link(bin_path)
+            if link:
+                info["login_url"] = link
+        return info
     proc = _run_login_cli(bin_path, ["login", "--check"], LOGIN_CHECK_TIMEOUT_SEC)
     if proc is None:
         return {}
     payload = _login_payload(f"{proc.stdout or ''}\n{proc.stderr or ''}")
     if not payload or payload.get("success") is True:
         return {}
-    info: dict[str, Any] = {
+    info = {
         "logged_in": False,
         "reason": str(payload.get("message") or "").strip() or "未登录",
     }
@@ -1947,7 +2011,8 @@ def run_from_params(
         # Any music failure while ncm-cli is logged out is really a login failure
         # (the CLI silently drops authenticated commands, e.g. ``playlist``).
         # Report the full login info raw; Brain decides who gets the link.
-        info = ncm_login_required_info()
+        # Pass the original error so an explicit「请先登录…」skips login --check.
+        info = ncm_login_required_info(known_reason=str(e))
         if info:
             raise NeteaseMusicLoginRequired(str(e), info) from None
         raise

@@ -1255,6 +1255,98 @@ class NeteaseMusicTests(unittest.TestCase):
         self.assertEqual(ctx.exception.info.get("login_url"), link)
         self.assertEqual(ctx.exception.info.get("logged_in"), False)
 
+    def test_looks_like_login_required_markers(self) -> None:
+        self.assertTrue(
+            nm.looks_like_login_required(
+                "请先登录实名账号，执行 ncm-cli login 完成登录"
+            )
+        )
+        self.assertTrue(nm.looks_like_login_required("未登录，请执行 ncm-cli login"))
+        self.assertTrue(nm.looks_like_login_required("网易云音乐登录已失效"))
+        self.assertFalse(nm.looks_like_login_required("播放列表为空"))
+        self.assertFalse(nm.looks_like_login_required(""))
+
+    def test_login_required_info_skips_check_when_reason_known(self) -> None:
+        """Explicit play login error must not wait on ``login --check`` (intent 835)."""
+        nm._login_link_cache = None
+        link = "https://163cn.tv/bjAhNVaT"
+        reason = "请先登录实名账号，执行 ncm-cli login 完成登录"
+        calls: list[list[str]] = []
+
+        def fake_run(cmd, **_kwargs):
+            calls.append(list(cmd))
+            if cmd[1:3] == ["login", "--check"]:
+                self.fail("must skip login --check when reason already proves logout")
+            if cmd[1:3] == ["login", "--background"]:
+                return _completed('{"success": true, "clickableUrl": "%s"}' % link)
+            self.fail(f"unexpected {cmd}")
+
+        with patch.object(nm, "ncm_cli_bin", return_value="/usr/bin/ncm-cli"):
+            with patch.object(nm.subprocess, "run", side_effect=fake_run):
+                info = nm.ncm_login_required_info(known_reason=reason)
+        self.assertEqual(info["logged_in"], False)
+        self.assertEqual(info["reason"], reason)
+        self.assertEqual(info["login_url"], link)
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0][1:3], ["login", "--background"])
+
+    def test_run_from_params_skips_check_on_explicit_login_play_error(self) -> None:
+        """intent #835: play already said 请先登录 — only mint the link, no --check."""
+        nm._login_link_cache = None
+        link = "https://163cn.tv/bjAhNVaT"
+        reason = "请先登录实名账号，执行 ncm-cli login 完成登录"
+        calls: list[list[str]] = []
+
+        def fake_run(cmd, **_kwargs):
+            calls.append(list(cmd))
+            if cmd[1:3] == ["login", "--check"]:
+                self.fail("explicit login play error must skip login --check")
+            if cmd[1:3] == ["login", "--background"]:
+                return _completed('{"success": true, "clickableUrl": "%s"}' % link)
+            self.fail(f"unexpected {cmd}")
+
+        with patch.object(
+            nm,
+            "_run_music_capability",
+            side_effect=nm.NeteaseMusicError(reason),
+        ):
+            with patch.object(nm, "ncm_cli_bin", return_value="/usr/bin/ncm-cli"):
+                with patch.object(nm.subprocess, "run", side_effect=fake_run):
+                    with self.assertRaises(nm.NeteaseMusicLoginRequired) as ctx:
+                        nm.run_from_params(
+                            "music.play",
+                            self._with_issuer(
+                                {"user_input": "播放歌曲十年", "song": "十年"}
+                            ),
+                        )
+        self.assertEqual(str(ctx.exception), reason)
+        self.assertEqual(ctx.exception.info.get("login_url"), link)
+        self.assertEqual(ctx.exception.info.get("reason"), reason)
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0][1:3], ["login", "--background"])
+
+    def test_run_login_cli_keeps_partial_output_on_timeout(self) -> None:
+        link = "https://163cn.tv/partial"
+        payload = json.dumps(
+            {"success": True, "clickableUrl": link},
+            ensure_ascii=False,
+        )
+
+        def fake_run(cmd, **kwargs):
+            raise subprocess.TimeoutExpired(
+                cmd=cmd,
+                timeout=kwargs.get("timeout", 5),
+                output=payload,
+                stderr="",
+            )
+
+        with patch.object(nm.subprocess, "run", side_effect=fake_run):
+            proc = nm._run_login_cli("/usr/bin/ncm-cli", ["login", "--background"], 5.0)
+        self.assertIsNotNone(proc)
+        assert proc is not None
+        self.assertIn(link, proc.stdout or "")
+        self.assertEqual(nm._login_payload(proc.stdout or "").get("clickableUrl"), link)
+
     def test_wants_xiaodu_from_speaker_and_utterance(self) -> None:
         self.assertTrue(nm.wants_xiaodu({"speaker": "xiaodu"}))
         self.assertTrue(nm.wants_xiaodu({"speaker": "小度音箱"}))
