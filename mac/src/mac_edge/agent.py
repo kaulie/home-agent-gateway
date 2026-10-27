@@ -401,10 +401,18 @@ class EdgeAgent:
             if iid and origin:
                 remember_intent_origin(iid, origin)
             # Fresh plan only for intents the ledger has not accepted yet.
+            # Skip detail when peek already carries an assigned plan — an extra
+            # Brain RTT here sat on the dispatch path for nothing (shortcut music).
             if iid and self._ledger.get(iid) is None:
-                detail = brain.fetch_intent_detail(iid)
-                if isinstance(detail, dict) and detail:
-                    intent = _merge_intent_detail(intent, detail)
+                plan = intent.get("execution_plan")
+                has_plan = isinstance(plan, list) and any(
+                    isinstance(s, dict) and str(s.get("assigned_edge_id") or "").strip()
+                    for s in plan
+                )
+                if not has_plan:
+                    detail = brain.fetch_intent_detail(iid)
+                    if isinstance(detail, dict) and detail:
+                        intent = _merge_intent_detail(intent, detail)
             if fail_empty_plan_intent(intent, edge_id=eid, brain=brain):
                 continue
             to_ingest.append(intent)
