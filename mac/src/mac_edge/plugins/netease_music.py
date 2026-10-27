@@ -228,6 +228,12 @@ LOGIN_LINK_TIMEOUT_SEC = 1.5
 LOGIN_LINK_TTL_SEC = 240.0
 _login_link_cache: tuple[float, str] | None = None
 
+# After an explicit logout, skip another full ``ncm-cli play`` (intent #846 paid
+# ~7s play RTT even though #845 already proved 请先登录). Re-validate with a
+# short ``login --check`` so a fresh scan-login is not stuck behind the TTL.
+LOGOUT_CACHE_TTL_SEC = 120.0
+_logout_cache: tuple[float, str] | None = None  # (monotonic_deadline, reason)
+
 # Play/search already said login is required — skip the redundant ``login --check``.
 _LOGIN_REQUIRED_MARKERS = (
     "请先登录",
@@ -253,6 +259,47 @@ def looks_like_login_required(message: str) -> bool:
             return True
     return False
 
+
+def remember_logout(reason: str) -> None:
+    """Remember an explicit NetEase logout so the next play can fail fast."""
+    global _logout_cache
+    text = str(reason or "").strip()
+    if not text or not looks_like_login_required(text):
+        return
+    _logout_cache = (time.monotonic() + LOGOUT_CACHE_TTL_SEC, text)
+
+
+def clear_logout_cache() -> None:
+    global _logout_cache
+    _logout_cache = None
+
+
+def cached_logout_reason() -> str | None:
+    if _logout_cache is None:
+        return None
+    deadline, reason = _logout_cache
+    if time.monotonic() >= deadline:
+        return None
+    return reason
+
+
+def raise_if_known_logged_out() -> None:
+    """Fail fast when a recent intent already proved NetEase logout.
+
+    Cheap path: ``login --check`` (≤ LOGIN_CHECK_TIMEOUT_SEC) instead of another
+    ``play`` round-trip. If the user re-scanned in the meantime, clear the cache
+    and let play proceed.
+    """
+    reason = cached_logout_reason()
+    if not reason:
+        return
+    info = ncm_login_required_info(fetch_link=True)
+    if not info:
+        clear_logout_cache()
+        return
+    refreshed = str(info.get("reason") or "").strip() or reason
+    remember_logout(refreshed)
+    raise NeteaseMusicLoginRequired(refreshed, info)
 
 def _login_payload(combined: str) -> dict[str, Any]:
     try:
@@ -1780,6 +1827,8 @@ def _finish_with_xiaodu(
 
 def play_from_params(params: dict[str, Any] | None = None) -> tuple[str, dict[str, Any]]:
     t0 = time.perf_counter()
+    # Intent #846: prior logout must not pay another full ``ncm-cli play`` RTT.
+    raise_if_known_logged_out()
     raw = params if isinstance(params, dict) else {}
     song = str(_str_param(params, "song") or "").strip().rstrip(_TRAILING_PUNCT).strip()
     artist = str(_str_param(params, "artist") or "").strip().rstrip(_TRAILING_PUNCT).strip()
@@ -2027,8 +2076,9 @@ def run_from_params(
     if cap not in _MUSIC_CAPS:
         raise NeteaseMusicError(f"unsupported capability {cap}")
     try:
-        return _run_music_capability(cap, params)
-    except NeteaseMusicLoginRequired:
+        result = _run_music_capability(cap, params)
+    except NeteaseMusicLoginRequired as e:
+        remember_logout(str(e))
         raise
     except NeteaseMusicError as e:
         # Any music failure while ncm-cli is logged out is really a login failure
@@ -2037,8 +2087,11 @@ def run_from_params(
         # Pass the original error so an explicit「请先登录…」skips login --check.
         info = ncm_login_required_info(known_reason=str(e))
         if info:
+            remember_logout(str(e))
             raise NeteaseMusicLoginRequired(str(e), info) from None
         raise
+    clear_logout_cache()
+    return result
 
 
 def _run_music_capability(

@@ -46,7 +46,8 @@ class AsyncIntentStatusTest(unittest.TestCase):
         brain.post_intent_status_bg.assert_called_once()
         brain.post_intent_status.assert_not_called()
 
-    def test_failed_stays_synchronous(self) -> None:
+    def test_failed_without_ledger_stays_synchronous(self) -> None:
+        """No ledger → need a sync Brain post or the terminal is lost."""
         brain = MagicMock()
         brain.post_intent_status.return_value = {"ok": True}
         with patch("mac_edge.local_ledger.active", return_value=None):
@@ -60,6 +61,65 @@ class AsyncIntentStatusTest(unittest.TestCase):
         self.assertTrue(ok)
         brain.post_intent_status.assert_called_once()
         brain.post_intent_status_bg.assert_not_called()
+
+    def test_failed_with_ledger_uses_background_post(self) -> None:
+        """Intent #846: do not block FAIL path on Brain http_timeout."""
+        brain = MagicMock()
+        ledger = MagicMock()
+        with patch("mac_edge.local_ledger.active", return_value=ledger):
+            ok = _try_post_intent_status(
+                brain,
+                "846",
+                status="failed",
+                edge_id="edge-node-x",
+                message="请先登录实名账号，执行 ncm-cli login 完成登录",
+            )
+        self.assertTrue(ok)
+        ledger.set_intent_status.assert_called_once()
+        brain.post_intent_status_bg.assert_called_once()
+        brain.post_intent_status.assert_not_called()
+
+
+class AsyncTerminalStepStatusTest(unittest.TestCase):
+    def test_failed_step_with_ledger_uses_background_post(self) -> None:
+        from mac_edge.executor import STEP_FAILED, _try_post_step_status
+
+        brain = MagicMock()
+        ledger = MagicMock()
+        with patch("mac_edge.local_ledger.active", return_value=ledger):
+            ok = _try_post_step_status(
+                brain,
+                "846",
+                1,
+                status=STEP_FAILED,
+                edge_id="edge-node-x",
+                msg="请先登录实名账号，执行 ncm-cli login 完成登录",
+                outputs={"netease_login": {"logged_in": False}},
+            )
+        self.assertTrue(ok)
+        ledger.set_step_status.assert_called_once()
+        brain.post_step_status_bg.assert_called_once()
+        ledger.post_terminal_step_now.assert_not_called()
+        brain.post_step_status.assert_not_called()
+
+    def test_succeeded_step_with_ledger_still_posts_terminal_now(self) -> None:
+        from mac_edge.executor import STEP_SUCCEEDED, _try_post_step_status
+
+        brain = MagicMock()
+        ledger = MagicMock()
+        ledger.post_terminal_step_now.return_value = True
+        with patch("mac_edge.local_ledger.active", return_value=ledger):
+            ok = _try_post_step_status(
+                brain,
+                "846",
+                1,
+                status=STEP_SUCCEEDED,
+                edge_id="edge-node-x",
+                outputs={"timing": {"total": 1}},
+            )
+        self.assertTrue(ok)
+        ledger.post_terminal_step_now.assert_called_once()
+        brain.post_step_status_bg.assert_not_called()
 
 
 class IntentStatusBgEpochTest(unittest.TestCase):

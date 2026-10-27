@@ -146,6 +146,8 @@ class NeteaseMusicTests(unittest.TestCase):
         os.environ["MAC_EDGE_DATA_DIR"] = self._tmp.name
         os.environ["MAC_EDGE_NCM_RECORD"] = "0"
         ncm_store.reset(path=Path(self._tmp.name) / "ncm_songs.sqlite3")
+        nm.clear_logout_cache()
+        nm._login_link_cache = None
 
     def tearDown(self) -> None:
         ncm_store.reset()
@@ -1360,6 +1362,45 @@ class NeteaseMusicTests(unittest.TestCase):
         assert proc is not None
         self.assertIn(link, proc.stdout or "")
         self.assertEqual(nm._login_payload(proc.stdout or "").get("clickableUrl"), link)
+
+    def test_logout_cache_skips_play_on_next_intent(self) -> None:
+        """Intent #846: after explicit logout, next play must not call ncm-cli play."""
+        reason = "请先登录实名账号，执行 ncm-cli login 完成登录"
+        nm.remember_logout(reason)
+        calls: list[list[str]] = []
+
+        def fake_run(cmd, **_kwargs):
+            calls.append(list(cmd))
+            if cmd[1:3] == ["login", "--check"]:
+                return _completed(
+                    '{"success": false, "message": "未登录，请执行 ncm-cli login 完成登录"}'
+                )
+            if cmd[1:3] == ["login", "--background"]:
+                return _completed(
+                    '{"success": true, "clickableUrl": "https://163cn.tv/cache"}'
+                )
+            self.fail(f"must not reach play/search after logout cache: {cmd}")
+
+        with patch.object(nm, "ncm_cli_bin", return_value="/usr/bin/ncm-cli"):
+            with patch.object(nm.subprocess, "run", side_effect=fake_run):
+                with self.assertRaises(nm.NeteaseMusicLoginRequired) as ctx:
+                    nm.run_from_params(
+                        "music.play",
+                        self._with_issuer({"user_input": "播放歌曲十年", "song": "十年"}),
+                    )
+        self.assertTrue(nm.looks_like_login_required(str(ctx.exception)))
+        self.assertTrue(any(c[1:3] == ["login", "--check"] for c in calls))
+        self.assertFalse(any(_ncm_action(c) == "play" for c in calls))
+
+    def test_logout_cache_clears_after_relogin_check(self) -> None:
+        """Fresh scan-login must not stay stuck behind the logout TTL."""
+        nm.remember_logout("请先登录实名账号，执行 ncm-cli login 完成登录")
+        with patch.object(nm, "ncm_cli_bin", return_value="/usr/bin/ncm-cli"):
+            with patch.object(
+                nm.subprocess, "run", side_effect=self._login_cli(logged_in=True)
+            ):
+                nm.raise_if_known_logged_out()
+        self.assertIsNone(nm.cached_logout_reason())
 
     def test_wants_xiaodu_from_speaker_and_utterance(self) -> None:
         self.assertTrue(nm.wants_xiaodu({"speaker": "xiaodu"}))
