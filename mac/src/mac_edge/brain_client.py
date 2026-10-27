@@ -482,6 +482,7 @@ class BrainClient:
         status: str,
         edge_node_id: str,
         message: str = "",
+        ts_ms: int | None = None,
     ) -> dict[str, Any]:
         iid = str(intent_id).strip()
         url = f"{self.config.brain_base_url}/api/v1/intent/{iid}/status"
@@ -493,6 +494,11 @@ class BrainClient:
         }
         if message:
             body["message"] = message
+        if ts_ms is not None:
+            try:
+                body["ts"] = int(ts_ms)
+            except (TypeError, ValueError):
+                pass
         log.info("POST intent status %s → %s", iid, status)
         resp = self._post(url, json=body)
         return self._json_or_raise(resp, "intent_status")
@@ -518,6 +524,7 @@ class BrainClient:
         edge_node_id: str,
         message: str = "",
         epoch: int | None = None,
+        ts_ms: int | None = None,
     ) -> None:
         """Fire-and-forget intent status (does not block the executor)."""
         ep = _bump_intent_epoch(intent_id) if epoch is None else epoch
@@ -536,6 +543,7 @@ class BrainClient:
                 status=status,
                 edge_node_id=edge_node_id,
                 message=message,
+                ts_ms=ts_ms,
             )
 
         _submit_report(f"intent_status {intent_id}→{status}", _run)

@@ -170,6 +170,9 @@ class Config:
     # Domain → URL when MAC_EDGE_BRAIN_URL is a JSON object {"lan": "...", "cloud": "..."}.
     brain_urls_by_domain: dict[str, str] = field(default_factory=dict)
     interval_sec: float = 3.0
+    # When the local ledger still has open intents, poll faster than idle.
+    # Idle floor stays at interval_sec (default 3s); busy default 0.5s.
+    busy_interval_sec: float = 0.5
     identity: Identity = field(default_factory=Identity)
     data_dir: Path = field(default_factory=lambda: _project_root() / "data")
     # External Cast HTTP base (no query). Plugin appends ?url=.
@@ -349,6 +352,11 @@ def load_config() -> Config:
         os.environ.get("MAC_EDGE_DATA_DIR", str(root / "data"))
     ).expanduser()
     interval = float(os.environ.get("MAC_EDGE_INTERVAL_SEC", "3"))
+    busy_raw = os.environ.get("MAC_EDGE_BUSY_INTERVAL_SEC", "0.5")
+    try:
+        busy_interval = float(busy_raw)
+    except ValueError:
+        busy_interval = 0.5
     brain_urls, by_domain = _resolve_brain_urls()
     primary = brain_urls[0]
 
@@ -397,11 +405,15 @@ def load_config() -> Config:
         exposure_policy=exposure_policy,
     )
 
+    idle_interval = max(3.0, interval)
+    # Busy poll must stay below idle; floor 0.2s so we do not spin the CPU.
+    busy_clamped = _clamp(busy_interval, 0.2, idle_interval)
     return Config(
         brain_base_url=primary,
         brain_base_urls=brain_urls,
         brain_urls_by_domain=dict(by_domain),
-        interval_sec=max(3.0, interval),
+        interval_sec=idle_interval,
+        busy_interval_sec=busy_clamped,
         identity=identity,
         data_dir=data_dir,
         cast_display_url=cast_display_url.rstrip("/"),
