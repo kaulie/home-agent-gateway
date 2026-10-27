@@ -6,6 +6,8 @@ import json
 import os
 import subprocess
 import tempfile
+import threading
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -1269,40 +1271,53 @@ class NeteaseMusicTests(unittest.TestCase):
     def test_login_required_info_skips_check_when_reason_known(self) -> None:
         """Explicit play login error must not wait on ``login --check`` (intent 835)."""
         nm._login_link_cache = None
-        link = "https://163cn.tv/bjAhNVaT"
         reason = "请先登录实名账号，执行 ncm-cli login 完成登录"
-        calls: list[list[str]] = []
+        started = threading.Event()
 
         def fake_run(cmd, **_kwargs):
-            calls.append(list(cmd))
             if cmd[1:3] == ["login", "--check"]:
                 self.fail("must skip login --check when reason already proves logout")
             if cmd[1:3] == ["login", "--background"]:
-                return _completed('{"success": true, "clickableUrl": "%s"}' % link)
+                started.set()
+                return _completed('{"success": true, "clickableUrl": "https://163cn.tv/x"}')
             self.fail(f"unexpected {cmd}")
 
         with patch.object(nm, "ncm_cli_bin", return_value="/usr/bin/ncm-cli"):
             with patch.object(nm.subprocess, "run", side_effect=fake_run):
                 info = nm.ncm_login_required_info(known_reason=reason)
+        # Intent #843: do not block the fail path on login --background.
         self.assertEqual(info["logged_in"], False)
         self.assertEqual(info["reason"], reason)
-        self.assertEqual(info["login_url"], link)
-        self.assertEqual(len(calls), 1)
-        self.assertEqual(calls[0][1:3], ["login", "--background"])
+        self.assertNotIn("login_url", info)
+        self.assertTrue(started.wait(1.0), "background mint should still be scheduled")
 
-    def test_run_from_params_skips_check_on_explicit_login_play_error(self) -> None:
-        """intent #835: play already said 请先登录 — only mint the link, no --check."""
-        nm._login_link_cache = None
+    def test_login_required_info_uses_cached_link_without_cli(self) -> None:
+        """Cached QR is attached immediately; no sync ``login --background``."""
         link = "https://163cn.tv/bjAhNVaT"
+        nm._login_link_cache = (time.monotonic(), link)
         reason = "请先登录实名账号，执行 ncm-cli login 完成登录"
-        calls: list[list[str]] = []
 
         def fake_run(cmd, **_kwargs):
-            calls.append(list(cmd))
+            self.fail(f"must not call ncm-cli when cache hit: {cmd}")
+
+        with patch.object(nm, "ncm_cli_bin", return_value="/usr/bin/ncm-cli"):
+            with patch.object(nm.subprocess, "run", side_effect=fake_run):
+                info = nm.ncm_login_required_info(known_reason=reason)
+        self.assertEqual(info.get("login_url"), link)
+
+    def test_run_from_params_skips_check_on_explicit_login_play_error(self) -> None:
+        """intent #835/#843: play already said 请先登录 — fail fast, no sync link wait."""
+        nm._login_link_cache = None
+        reason = "请先登录实名账号，执行 ncm-cli login 完成登录"
+        sync_calls: list[list[str]] = []
+
+        def fake_run(cmd, **_kwargs):
+            sync_calls.append(list(cmd))
             if cmd[1:3] == ["login", "--check"]:
                 self.fail("explicit login play error must skip login --check")
             if cmd[1:3] == ["login", "--background"]:
-                return _completed('{"success": true, "clickableUrl": "%s"}' % link)
+                time.sleep(0.05)
+                return _completed('{"success": true, "clickableUrl": "https://163cn.tv/x"}')
             self.fail(f"unexpected {cmd}")
 
         with patch.object(
@@ -1320,10 +1335,9 @@ class NeteaseMusicTests(unittest.TestCase):
                             ),
                         )
         self.assertEqual(str(ctx.exception), reason)
-        self.assertEqual(ctx.exception.info.get("login_url"), link)
         self.assertEqual(ctx.exception.info.get("reason"), reason)
-        self.assertEqual(len(calls), 1)
-        self.assertEqual(calls[0][1:3], ["login", "--background"])
+        # Sync path must not call login --background (bg mint is fire-and-forget).
+        self.assertFalse(any(c[1:3] == ["login", "--check"] for c in sync_calls))
 
     def test_run_login_cli_keeps_partial_output_on_timeout(self) -> None:
         link = "https://163cn.tv/partial"

@@ -505,6 +505,66 @@ class LocalLedgerTests(unittest.TestCase):
             self.assertEqual(intent_ids[0], IID)
             self.assertEqual(brain.intent_posts[0][3], 2002)
 
+    def test_terminal_step_posts_while_flush_lock_held(self) -> None:
+        """Intent #843: FAILED must not wait on a stuck RUNNING flush lock."""
+        import threading
+        import time
+
+        self.ledger.ingest_peek([_waiting_intent(intent_status="running")], EID)
+        self.ledger.set_step_status(IID, 1, 1, ts_ms=1)
+        self.ledger.set_step_status(
+            IID, 1, 3, outputs={"netease_login": {"logged_in": False}}, ts_ms=2, msg="logout"
+        )
+        self.ledger.set_intent_status(IID, "running", ts_ms=1)
+
+        started = threading.Event()
+        release = threading.Event()
+
+        class _BlockingBrain(_FakeBrain):
+            def post_step_status(self, *args, **kwargs):
+                started.set()
+                if not release.wait(2.0):
+                    raise AssertionError("flush not released")
+                return super().post_step_status(*args, **kwargs)
+
+        brain = _BlockingBrain()
+
+        def _hold_flush() -> None:
+            self.ledger.flush_to_brain(brain, EID)  # type: ignore[arg-type]
+
+        holder = threading.Thread(target=_hold_flush, daemon=True)
+        holder.start()
+        self.assertTrue(started.wait(1.0), "background flush should start")
+
+        fast = _FakeBrain()
+        t0 = time.monotonic()
+        ok = self.ledger.post_terminal_step_now(
+            fast,  # type: ignore[arg-type]
+            EID,
+            IID,
+            1,
+            status=3,
+            outputs={"netease_login": {"logged_in": False}},
+            ts_ms=2,
+            msg="logout",
+        )
+        elapsed = time.monotonic() - t0
+        release.set()
+        holder.join(2.0)
+        self.assertTrue(ok)
+        self.assertLess(elapsed, 0.5, "terminal post must not wait on flush_lock")
+        self.assertEqual(len(fast.step_posts), 1)
+        self.assertEqual(fast.step_posts[0][2], 3)
+
+    def test_flush_skips_stale_running_after_local_terminal_step(self) -> None:
+        self.ledger.ingest_peek([_waiting_intent(intent_status="running")], EID)
+        self.ledger.set_step_status(IID, 1, 3, ts_ms=2, msg="fail")
+        self.ledger.set_intent_status(IID, "running", ts_ms=1)
+        brain = _FakeBrain()
+        posted = self.ledger.flush_to_brain(brain, EID)  # type: ignore[arg-type]
+        self.assertGreaterEqual(posted, 1)
+        self.assertTrue(all(row[1] != "running" for row in brain.intent_posts))
+
 
 if __name__ == "__main__":
     unittest.main()
