@@ -519,14 +519,17 @@ def handle_intent(
             ledger.set_step_status(
                 iid, step_num, STEP_RUNNING, ts_ms=BRAIN_CLOCK.now_ms()
             )
-            ledger.set_intent_status(iid, "running")
+            running_ts = BRAIN_CLOCK.now_ms()
+            ledger.set_intent_status(iid, "running", ts_ms=running_ts)
             _flush_ledger_to_brain(
                 ledger,
                 brain,
                 eid,
                 label=f"running {iid}/{step_num}",
+                prefer_intent_id=iid,
             )
         else:
+            running_ts = BRAIN_CLOCK.now_ms()
             step_ep, intent_ep = brain.begin_running_reports(iid, step_num)
             brain.post_step_status_bg(
                 iid,
@@ -534,7 +537,7 @@ def handle_intent(
                 step_status=STEP_RUNNING,
                 edge_node_id=eid,
                 epoch=step_ep,
-                ts_ms=BRAIN_CLOCK.now_ms(),
+                ts_ms=running_ts,
             )
             brain.post_intent_status_bg(
                 iid,
@@ -542,6 +545,7 @@ def handle_intent(
                 edge_node_id=eid,
                 message=f"executing {cap}",
                 epoch=intent_ep,
+                ts_ms=running_ts,
             )
 
         _EXECUTING_STEPS.add((iid, step_num))
@@ -797,12 +801,15 @@ def _flush_ledger_to_brain(
     edge_id: str,
     *,
     label: str,
+    prefer_intent_id: str | None = None,
 ) -> bool:
     """Best-effort synchronous ledger → Brain replay (RUNNING must not lag)."""
     if brain is None:
         return False
     try:
-        posted = ledger.flush_to_brain(brain, edge_id)
+        posted = ledger.flush_to_brain(
+            brain, edge_id, prefer_intent_id=prefer_intent_id
+        )
         if posted:
             log.info("ledger: sync flush %s posted=%s", label, posted)
         return posted > 0
@@ -883,12 +890,14 @@ def _try_post_intent_status(
     status: str,
     edge_id: str,
     message: str = "",
+    ts_ms: int | None = None,
 ) -> bool:
     from mac_edge.local_ledger import active as _ledger_active
 
+    event_ts = int(ts_ms) if ts_ms is not None else BRAIN_CLOCK.now_ms()
     ledger = _ledger_active()
     if ledger is not None:
-        ledger.set_intent_status(intent_id, status)
+        ledger.set_intent_status(intent_id, status, ts_ms=event_ts)
     if brain is None:
         return False
     try:
@@ -897,6 +906,7 @@ def _try_post_intent_status(
             status=status,
             edge_node_id=edge_id,
             message=message,
+            ts_ms=event_ts,
         )
         if ledger is not None:
             ledger.mark_intent_synced(intent_id, status=status)

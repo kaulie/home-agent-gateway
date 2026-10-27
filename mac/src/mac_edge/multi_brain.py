@@ -259,6 +259,7 @@ class MultiBrainClient:
         status: str,
         edge_node_id: str,
         message: str = "",
+        ts_ms: int | None = None,
     ) -> dict[str, Any]:
         return self._call_routed(
             intent_id,
@@ -268,6 +269,7 @@ class MultiBrainClient:
                 status=status,
                 edge_node_id=edge_node_id,
                 message=message,
+                ts_ms=ts_ms,
             ),
         )
 

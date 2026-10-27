@@ -225,15 +225,16 @@ class EdgeAgent:
                         self._brain_fail_streak = 0
                         self._suppressed_brain_errors = 0
                         elapsed = time.monotonic() - tick_started
+                        poll_interval = self._poll_interval_sec()
                         if next_deadline is not None:
                             sleep_for = sleep_sec_until_deadline(
                                 next_deadline,
-                                default_interval_sec=self.config.interval_sec,
+                                default_interval_sec=poll_interval,
                             )
                         else:
                             sleep_for = max(
                                 DEADLINE_SLEEP_MIN_SEC,
-                                self.config.interval_sec - elapsed,
+                                poll_interval - elapsed,
                             )
                     except BrainError as e:
                         if e.is_unauthorized:
@@ -573,6 +574,20 @@ class EdgeAgent:
             self._suppressed_brain_errors = 0
         else:
             self._suppressed_brain_errors += 1
+
+    def _poll_interval_sec(self) -> float:
+        """Idle 3s; when local ledger still has open work, poll at busy_interval."""
+        idle = float(self.config.interval_sec)
+        busy = float(getattr(self.config, "busy_interval_sec", 0.5) or 0.5)
+        eid = self._get_edge_id()
+        if not eid:
+            return idle
+        try:
+            if self._ledger.snapshot_open(eid):
+                return max(DEADLINE_SLEEP_MIN_SEC, min(busy, idle))
+        except Exception:
+            log.debug("poll interval: snapshot_open failed", exc_info=True)
+        return idle
 
     def _backoff_seconds(self) -> float:
         # 3, 6, 12, 24, 48, 96, cap 120 — still probes while Brain is down.

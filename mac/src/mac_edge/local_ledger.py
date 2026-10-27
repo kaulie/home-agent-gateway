@@ -233,7 +233,13 @@ class LocalLedger:
                 break
             self._persist_unlocked()
 
-    def set_intent_status(self, intent_id: str, status: str) -> None:
+    def set_intent_status(
+        self,
+        intent_id: str,
+        status: str,
+        *,
+        ts_ms: int | None = None,
+    ) -> None:
         iid = str(intent_id).strip()
         wire = str(status or "").strip().lower()
         with self._lock:
@@ -243,6 +249,13 @@ class LocalLedger:
             if str(rec.get("status") or "").strip().lower() == wire:
                 return
             rec["status"] = wire
+            if ts_ms is not None:
+                try:
+                    rec["status_ts_ms"] = int(ts_ms)
+                except (TypeError, ValueError):
+                    rec["status_ts_ms"] = None
+            else:
+                rec["status_ts_ms"] = None
             rec["synced"] = False
             self._persist_unlocked()
 
@@ -368,18 +381,37 @@ class LocalLedger:
 
     # --- flush ---
 
-    def flush_to_brain(self, brain: BrainClient, edge_id: str) -> int:
-        """Replay every queued step event in order, then unsynced intent status."""
+    def flush_to_brain(
+        self,
+        brain: BrainClient,
+        edge_id: str,
+        *,
+        prefer_intent_id: str | None = None,
+    ) -> int:
+        """Replay every queued step event in order, then unsynced intent status.
+
+        ``prefer_intent_id`` drains that intent's step/intent queue first so a
+        live RUNNING flush is not stuck behind unrelated sync backlog.
+        """
         eid = (edge_id or "").strip()
         if not eid:
             return 0
         with self._flush_lock:
-            return self._flush_to_brain_unlocked(brain, eid)
+            return self._flush_to_brain_unlocked(
+                brain, eid, prefer_intent_id=prefer_intent_id
+            )
 
-    def _flush_to_brain_unlocked(self, brain: BrainClient, edge_id: str) -> int:
+    def _flush_to_brain_unlocked(
+        self,
+        brain: BrainClient,
+        edge_id: str,
+        *,
+        prefer_intent_id: str | None = None,
+    ) -> int:
         posted = 0
+        prefer = str(prefer_intent_id or "").strip() or None
         while True:
-            job = self._next_queued_event()
+            job = self._next_queued_event(prefer_intent_id=prefer)
             if job is None:
                 break
             iid, n, ev = job
@@ -435,22 +467,34 @@ class LocalLedger:
             posted += 1
         with self._lock:
             intent_jobs = [
-                (iid, str(rec.get("status") or "").strip().lower() or "running")
+                (
+                    iid,
+                    str(rec.get("status") or "").strip().lower() or "running",
+                    rec.get("status_ts_ms"),
+                )
                 for iid, rec in self._intents.items()
                 if rec.get("synced") is not True
             ]
-        for iid, wire in intent_jobs:
+        if prefer:
+            intent_jobs.sort(key=lambda row: 0 if row[0] == prefer else 1)
+        for iid, wire, status_ts in intent_jobs:
             rec = self.get(iid)
             if rec is None or rec.get("synced") is True:
                 continue
             if str(rec.get("status") or "").strip().lower() != wire:
                 continue
             try:
+                ts_i: int | None
+                try:
+                    ts_i = int(status_ts) if status_ts is not None else None
+                except (TypeError, ValueError):
+                    ts_i = None
                 brain.post_intent_status(
                     iid,
                     status=wire,
                     edge_node_id=edge_id,
                     message="ledger flush",
+                    ts_ms=ts_i,
                 )
             except BrainError as e:
                 if _is_obsolete_replay(str(e)):
@@ -470,9 +514,15 @@ class LocalLedger:
             log.info("ledger: flushed %s record(s) to Brain", posted)
         return posted
 
-    def _next_queued_event(self) -> tuple[str, int, dict[str, Any]] | None:
-        with self._lock:
-            for iid, rec in self._intents.items():
+    def _next_queued_event(
+        self,
+        *,
+        prefer_intent_id: str | None = None,
+    ) -> tuple[str, int, dict[str, Any]] | None:
+        prefer = str(prefer_intent_id or "").strip() or None
+
+        def _scan(items: list[tuple[str, dict[str, Any]]]) -> tuple[str, int, dict[str, Any]] | None:
+            for iid, rec in items:
                 for step in rec.get("execution_plan") or []:
                     if not isinstance(step, dict):
                         continue
@@ -481,7 +531,18 @@ class LocalLedger:
                         continue
                     n = int(step.get("step") or 0)
                     return iid, n, json.loads(json.dumps(q[0]))
-        return None
+            return None
+
+        with self._lock:
+            items = list(self._intents.items())
+            if prefer:
+                preferred = [(iid, rec) for iid, rec in items if iid == prefer]
+                rest = [(iid, rec) for iid, rec in items if iid != prefer]
+                hit = _scan(preferred)
+                if hit is not None:
+                    return hit
+                return _scan(rest)
+            return _scan(items)
 
     def _discard_queued_event(self, intent_id: str, step_num: int) -> None:
         """Drop the head sync event for a step Brain will never accept.

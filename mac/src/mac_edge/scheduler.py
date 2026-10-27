@@ -1,4 +1,10 @@
-"""Independent intent-level scheduler (Brain intent_scheduled → intent_dispatched)."""
+"""Independent intent-level scheduler (Brain intent_parsed → intent_dispatched).
+
+Historically posted ``intent_scheduled`` then ``intent_dispatched`` (two RTTs).
+That doubled status latency (~3s on intent #835). Now a single hop to
+``intent_dispatched``; ``intent_scheduled`` is only accepted as a legacy wire
+state to finish upgrading.
+"""
 
 from __future__ import annotations
 
@@ -120,41 +126,25 @@ class IntentScheduler:
             self._reconcile_from_steps(iid, intent, eid, brain, wire)
             return
 
-        if wire == "intent_scheduled":
-            posted = _try_post_intent_status(
-                brain,
-                iid,
-                status="intent_dispatched",
-                edge_id=eid,
-            )
-            self._dispatched.add(iid)
-            if posted:
-                log.info("scheduler: intent %s → intent_dispatched", iid)
-            else:
-                log.info(
-                    "scheduler: intent %s → intent_dispatched locally (Brain unsynced)",
-                    iid,
-                )
-            return
-
-        posted_sched = _try_post_intent_status(
-            brain,
-            iid,
-            status="intent_scheduled",
-            edge_id=eid,
-        )
-        posted_disp = _try_post_intent_status(
+        # One hop: parsed (or legacy scheduled) → dispatched. Skip the extra
+        # intent_scheduled POST that used to cost a full Brain RTT.
+        posted = _try_post_intent_status(
             brain,
             iid,
             status="intent_dispatched",
             edge_id=eid,
         )
         self._dispatched.add(iid)
-        if posted_sched and posted_disp:
-            log.info("scheduler: intent %s scheduled → dispatched (node=%s)", iid, eid)
+        if posted:
+            log.info(
+                "scheduler: intent %s → intent_dispatched (from %s, node=%s)",
+                iid,
+                wire or "unknown",
+                eid,
+            )
         else:
             log.info(
-                "scheduler: intent %s scheduled → dispatched locally (Brain unsynced)",
+                "scheduler: intent %s → intent_dispatched locally (Brain unsynced)",
                 iid,
             )
 

@@ -65,10 +65,12 @@ class _FakeBrain:
             (str(intent_id), int(step_num), int(step_status), outputs, ts_ms, msg)
         )
 
-    def post_intent_status(self, intent_id, *, status, edge_node_id, message=""):
+    def post_intent_status(
+        self, intent_id, *, status, edge_node_id, message="", ts_ms=None
+    ):
         if self.fail:
             raise BrainError("brain down", transient=True)
-        self.intent_posts.append((str(intent_id), str(status), message))
+        self.intent_posts.append((str(intent_id), str(status), message, ts_ms))
 
 
 class _RejectRunningBrain(_FakeBrain):
@@ -478,6 +480,30 @@ class LocalLedgerTests(unittest.TestCase):
 
     def test_bind_active(self) -> None:
         self.assertIs(active(), self.ledger)
+
+    def test_flush_prefers_named_intent_over_backlog(self) -> None:
+        """Live RUNNING flush must not wait behind another intent's sync_queue."""
+        other = "intent-old"
+        self.ledger.ingest_peek(
+            [
+                _waiting_intent(iid=other, intent_status="running"),
+                _waiting_intent(iid=IID, intent_status="intent_dispatched"),
+            ],
+            EID,
+        )
+        self.ledger.set_step_status(other, 1, 1, ts_ms=1)
+        self.ledger.set_step_status(IID, 1, 1, ts_ms=2)
+        self.ledger.set_intent_status(IID, "running", ts_ms=2002)
+        brain = _FakeBrain()
+        posted = self.ledger.flush_to_brain(
+            brain, EID, prefer_intent_id=IID  # type: ignore[arg-type]
+        )
+        self.assertGreaterEqual(posted, 1)
+        self.assertEqual(brain.step_posts[0][0], IID)
+        intent_ids = [row[0] for row in brain.intent_posts]
+        if intent_ids:
+            self.assertEqual(intent_ids[0], IID)
+            self.assertEqual(brain.intent_posts[0][3], 2002)
 
 
 if __name__ == "__main__":
